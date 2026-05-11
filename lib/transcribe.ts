@@ -75,7 +75,30 @@ export async function transcribeAudio(
     throw new Error(`Transcription failed: ${r.status} ${text}`);
   }
 
-  const bodyText = await r.text();
+  // The proxy responds with an NDJSON keepalive stream (see
+  // app/api/transcribe/route.ts). We want the last line, which is the
+  // `{"type":"result", ...}` envelope wrapping the actual gateway body.
+  const streamText = await r.text();
+  const lines = streamText.split("\n").filter((l) => l.trim().length > 0);
+  const lastLine = lines[lines.length - 1] ?? "";
+  let envelope: { type: string; status: number; body: string };
+  try {
+    envelope = JSON.parse(lastLine);
+  } catch {
+    throw new Error(
+      `Transcription failed: malformed proxy response (${streamText.slice(-200)})`
+    );
+  }
+  if (envelope.type !== "result") {
+    throw new Error(`Transcription failed: unexpected envelope type=${envelope.type}`);
+  }
+  if (envelope.status < 200 || envelope.status >= 300) {
+    throw new Error(
+      `Transcription failed: ${envelope.status} ${envelope.body.slice(0, 500)}`
+    );
+  }
+
+  const bodyText = envelope.body;
   let data: AdvancedResponse | SimpleResponse;
   try {
     data = JSON.parse(bodyText);
