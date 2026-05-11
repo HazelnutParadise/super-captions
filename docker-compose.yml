@@ -1,0 +1,19 @@
+services:
+  super-captions:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: super-captions
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Resolved over infra-net to the speech gateway container.
+      WHISPER_GATEWAY_URL: http://whisper-gateway:5148
+      NODE_ENV: production
+    networks:
+      - infra-net
+
+networks:
+  infra-net:
+    external: true

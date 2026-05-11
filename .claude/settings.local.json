@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:100.79.146.102)",
+      "Bash(curl -s -m 5 http://100.79.146.102:5148/)",
+      "Bash(echo \"---EXIT:$?\")",
+      "Bash(curl -s -m 5 http://100.79.146.102:5148/docs)",
+      "Bash(curl -s -m 5 http://100.79.146.102:5148/openapi.json)",
+      "Bash(curl -s -m 5 http://100.79.146.102:5148/health)",
+      "Bash(curl -s -m 5 http://100.79.146.102:5148/api)"
+    ]
+  }
+}
