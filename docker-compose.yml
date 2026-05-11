@@ -6,7 +6,7 @@ services:
     container_name: super-captions
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "50821:3000"
     environment:
       # Resolved over infra-net to the speech gateway container.
       WHISPER_GATEWAY_URL: http://whisper-gateway:5148
