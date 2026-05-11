@@ -1,5 +1,6 @@
 import type { CaptionSegment } from "./types";
 import { convertChinese, type ChineseScript } from "./chinese-convert";
+import { resegment } from "./resegment";
 
 /**
  * Response shape from 榛果繽紛樂's whisper-api when `advanced=true`.
@@ -155,6 +156,11 @@ export async function transcribeAudio(
       segments.map(async (s) => ({ ...s, text: await convertChinese(s.text, target) }))
     );
   }
+
+  // Re-segment overly long captions. Whisper sometimes emits 60+ char single
+  // segments for a fast monologue with no breath pauses; we slice them on
+  // punctuation so each caption reads in one glance.
+  segments = resegment(segments);
 
   return { segments, raw: data, speakerLabels };
 }
