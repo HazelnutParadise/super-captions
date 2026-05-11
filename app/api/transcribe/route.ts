@@ -27,8 +27,14 @@ const GATEWAY =
  * upstream fetch, with the original multipart boundary preserved.
  */
 export async function POST(req: NextRequest) {
+  const t0 = Date.now();
   try {
     const contentType = req.headers.get("content-type") ?? "";
+    const contentLength = req.headers.get("content-length");
+    console.log(
+      `[transcribe] POST received ct=${contentType} cl=${contentLength ?? "n/a"} hasBody=${!!req.body}`
+    );
+
     if (!contentType.startsWith("multipart/form-data")) {
       return NextResponse.json(
         { error: "Expected multipart/form-data" },
@@ -39,10 +45,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Empty request body" }, { status: 400 });
     }
 
-    const contentLength = req.headers.get("content-length");
     const upstreamHeaders: Record<string, string> = { "content-type": contentType };
     if (contentLength) upstreamHeaders["content-length"] = contentLength;
 
+    console.log(
+      `[transcribe] forwarding to ${GATEWAY}/v1/audio/transcriptions`
+    );
     const upstream = await fetch(`${GATEWAY}/v1/audio/transcriptions`, {
       method: "POST",
       headers: upstreamHeaders,
@@ -51,6 +59,9 @@ export async function POST(req: NextRequest) {
       // @ts-expect-error — duplex is not yet in the lib.dom typings.
       duplex: "half",
     });
+    console.log(
+      `[transcribe] upstream responded status=${upstream.status} after ${Date.now() - t0}ms`
+    );
 
     const upstreamCT =
       upstream.headers.get("content-type") ?? "application/json";
