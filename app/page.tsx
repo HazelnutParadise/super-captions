@@ -1,7 +1,15 @@
 import { AppHeader } from "@/components/app-header";
 import { UploadCard } from "@/components/upload-card";
 import { HazelnutNavbar } from "@/components/hazelnut-navbar";
-import { Sparkles, AudioWaveform, ScanLine, Film } from "lucide-react";
+import {
+  Sparkles,
+  ShieldCheck,
+  Users,
+  ScanLine,
+  Palette,
+  Languages,
+  Film,
+} from "lucide-react";
 
 export default function Home() {
   return (
@@ -17,32 +25,45 @@ export default function Home() {
             </span>
           </div>
           <h1 className="text-4xl font-bold leading-tight tracking-tight md:text-5xl">
-            把影片
-            <span className="gradient-text"> 自動加字幕 </span>
+            影片不用上傳，
             <br />
-            又快、又安全、又好看。
+            <span className="gradient-text">字幕也能自動上好</span>。
           </h1>
           <p className="max-w-xl text-base leading-relaxed text-muted-foreground">
-            影片完全留在你的瀏覽器，<b>只有音訊</b>會被擷取並送往 Whisper
-            Gateway。轉錄完成後在我們的工作室裡逐句校稿、自訂講者樣式，
-            最後再把字幕燒錄回影片下載。
+            全程在你的瀏覽器裡處理，<b>只把音訊送上雲</b>。
+            多人對話自動分人、逐句校稿、樣式自選，最後字幕燒進影片直接下載。
           </p>
 
-          <div className="grid grid-cols-3 gap-3 pt-2">
+          <div className="grid grid-cols-2 gap-3 pt-2 md:grid-cols-3">
             <Feature
-              icon={<AudioWaveform className="h-4 w-4" />}
-              title="本機分離音訊"
-              desc="ffmpeg.wasm 在瀏覽器中擷取單聲道 MP3"
+              icon={<ShieldCheck className="h-5 w-5" />}
+              title="影片不外流"
+              desc="只送音訊上雲，原始檔留在你的裝置"
             />
             <Feature
-              icon={<ScanLine className="h-4 w-4" />}
-              title="即時預覽"
-              desc="左影片右逐句字幕，進度條同步高亮"
+              icon={<Users className="h-5 w-5" />}
+              title="自動辨識講者"
+              desc="多人對話自動分組，不用一句句標誰在講"
             />
             <Feature
-              icon={<Film className="h-4 w-4" />}
-              title="燒錄輸出"
-              desc="多講者樣式 · Canvas 合成 · 一鍵下載"
+              icon={<ScanLine className="h-5 w-5" />}
+              title="逐句即時校稿"
+              desc="影片邊播邊改，錯字漏字立刻修正"
+            />
+            <Feature
+              icon={<Palette className="h-5 w-5" />}
+              title="講者各有風格"
+              desc="顏色、字體、邊框獨立調，畫面不單調"
+            />
+            <Feature
+              icon={<Languages className="h-5 w-5" />}
+              title="多語通吃"
+              desc="自動偵測語言，中英日韓都接得住"
+            />
+            <Feature
+              icon={<Film className="h-5 w-5" />}
+              title="直接拿成品"
+              desc="字幕燒進影片，下載就能上架"
             />
           </div>
         </div>
@@ -78,12 +99,12 @@ function Feature({
   desc: string;
 }) {
   return (
-    <div className="rounded-lg border border-border/60 bg-card/60 p-3 backdrop-blur-sm">
-      <div className="mb-2 inline-flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 text-fuchsia-300">
+    <div className="rounded-lg border border-border/60 bg-card/60 p-4 backdrop-blur-sm">
+      <div className="mb-2.5 inline-flex h-9 w-9 items-center justify-center rounded-md bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 text-fuchsia-300">
         {icon}
       </div>
-      <div className="text-xs font-semibold">{title}</div>
-      <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+      <div className="text-base font-semibold">{title}</div>
+      <div className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
         {desc}
       </div>
     </div>
