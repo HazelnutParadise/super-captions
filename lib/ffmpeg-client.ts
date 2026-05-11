@@ -1,7 +1,7 @@
 "use client";
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { toBlobURL } from "@ffmpeg/util";
 
 let _ffmpeg: FFmpeg | null = null;
 let _loadPromise: Promise<FFmpeg> | null = null;
@@ -50,11 +50,12 @@ export async function extractAudio(
     );
   }
 
-  const ext = (videoFile.name.split(".").pop() ?? "mp4").toLowerCase();
+  const ext = pickExtension(videoFile);
   const inputName = `input.${ext}`;
   const outputName = "audio.mp3";
 
-  await ffmpeg.writeFile(inputName, await fetchFile(videoFile));
+  const inputBytes = await readFileBytes(videoFile);
+  await ffmpeg.writeFile(inputName, inputBytes);
   await ffmpeg.exec([
     "-i",
     inputName,
@@ -82,4 +83,75 @@ export async function extractAudio(
     bytes.byteOffset + bytes.byteLength
   ) as ArrayBuffer;
   return new File([arrayBuffer], "audio.mp3", { type: "audio/mpeg" });
+}
+
+const MIME_TO_EXT: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-matroska": "mkv",
+  "video/x-m4v": "m4v",
+  "video/avi": "avi",
+  "video/x-msvideo": "avi",
+};
+const KNOWN_EXTS = new Set([
+  "mp4",
+  "mov",
+  "webm",
+  "mkv",
+  "m4v",
+  "avi",
+  "wmv",
+  "flv",
+  "3gp",
+  "ogv",
+  "ts",
+]);
+
+function pickExtension(file: File): string {
+  const fromName = (file.name.split(".").pop() ?? "").toLowerCase();
+  if (KNOWN_EXTS.has(fromName)) return fromName;
+  if (file.type && MIME_TO_EXT[file.type]) return MIME_TO_EXT[file.type];
+  return "mp4";
+}
+
+/**
+ * Read a File/Blob into a Uint8Array. Prefer the native Blob.arrayBuffer()
+ * API — @ffmpeg/util's fetchFile wraps the old FileReader API which can fail
+ * silently with "File could not be read! Code=-1" on large videos. Falling
+ * back to FileReader only if the native path isn't available.
+ */
+async function readFileBytes(file: File): Promise<Uint8Array> {
+  try {
+    if (typeof file.arrayBuffer === "function") {
+      const ab = await file.arrayBuffer();
+      return new Uint8Array(ab);
+    }
+  } catch (e) {
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+    console.error(
+      `[ffmpeg-client] arrayBuffer() failed for ${file.name} (${sizeMb} MB):`,
+      e
+    );
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new Error(`讀取影片失敗（${sizeMb} MB）：${detail}`);
+  }
+  // Fallback for older browsers
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (result instanceof ArrayBuffer) resolve(new Uint8Array(result));
+      else reject(new Error("FileReader returned unexpected result"));
+    };
+    reader.onerror = () => {
+      const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+      reject(
+        new Error(
+          `讀取影片失敗（${sizeMb} MB）。FileReader code=${reader.error?.code ?? -1}`
+        )
+      );
+    };
+    reader.readAsArrayBuffer(file);
+  });
 }
