@@ -8,83 +8,68 @@ const GATEWAY =
   process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5148";
 
 /**
- * Proxies multipart/form-data audio transcription to the 榛果繽紛樂 Speech
- * Gateway. The gateway only honors a fixed set of form fields:
+ * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway. The
+ * gateway expects a multipart/form-data body with these fields (anything
+ * else is silently dropped upstream, so the client is responsible for
+ * only sending what it should):
  *
  *   file          required — audio bytes
  *   model         "whisper-1" | "turbo"
  *   language      ISO code, omit for auto-detect
- *   advanced      "true" → return segments[], words[], language, speakers[]
- *                 "false" (default) → return only {text}
+ *   advanced      "true" → segments[]/words[]/speakers[]
  *   diarize       defaults to true on the backend
  *   min_speakers  optional hint
  *   max_speakers  optional hint
  *
- * Anything else is silently dropped by the upstream service, so we filter
- * the incoming form to only these names before forwarding.
+ * We intentionally do NOT call req.formData() — that buffers the entire
+ * upload (potentially hundreds of MB for multi-hour videos) into memory,
+ * which can OOM the container. Instead we pipe req.body straight to the
+ * upstream fetch, with the original multipart boundary preserved.
  */
-const FORWARDED_FIELDS = new Set([
-  "file",
-  "model",
-  "language",
-  "advanced",
-  "diarize",
-  "min_speakers",
-  "max_speakers",
-]);
-
 export async function POST(req: NextRequest) {
   try {
-    const incoming = await req.formData();
-
-    const file = incoming.get("file");
-    if (!(file instanceof Blob)) {
+    const contentType = req.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("multipart/form-data")) {
       return NextResponse.json(
-        { error: "Missing audio 'file' field" },
+        { error: "Expected multipart/form-data" },
         { status: 400 }
       );
     }
-
-    const outgoing = new FormData();
-    outgoing.append("file", file, (file as File).name || "audio.webm");
-
-    const seen = new Set<string>();
-    for (const [key, value] of incoming.entries()) {
-      if (key === "file") continue;
-      if (!FORWARDED_FIELDS.has(key)) continue;
-      outgoing.append(key, value as string);
-      seen.add(key);
+    if (!req.body) {
+      return NextResponse.json({ error: "Empty request body" }, { status: 400 });
     }
-    // Always request the rich response.
-    if (!seen.has("advanced")) outgoing.append("advanced", "true");
-    if (!seen.has("model")) outgoing.append("model", "whisper-1");
+
+    const contentLength = req.headers.get("content-length");
+    const upstreamHeaders: Record<string, string> = { "content-type": contentType };
+    if (contentLength) upstreamHeaders["content-length"] = contentLength;
 
     const upstream = await fetch(`${GATEWAY}/v1/audio/transcriptions`, {
       method: "POST",
-      body: outgoing,
+      headers: upstreamHeaders,
+      body: req.body,
+      // Required by the fetch spec when body is a ReadableStream.
+      // @ts-expect-error — duplex is not yet in the lib.dom typings.
+      duplex: "half",
     });
 
-    const contentType =
+    const upstreamCT =
       upstream.headers.get("content-type") ?? "application/json";
     const text = await upstream.text();
 
-    // Dev-only breadcrumb so we can see what the gateway returned during
-    // local iteration. NEVER logs in production — keeps user transcripts
-    // off the server.
     if (process.env.NODE_ENV !== "production") {
       const preview = text.length > 1500 ? text.slice(0, 1500) + "…" : text;
       console.log(
-        `[transcribe] gateway=${upstream.status} ct=${contentType} bytes=${text.length} body=${preview}`
+        `[transcribe] gateway=${upstream.status} ct=${upstreamCT} bytes=${text.length} body=${preview}`
       );
     } else {
       console.log(
-        `[transcribe] gateway=${upstream.status} ct=${contentType} bytes=${text.length}`
+        `[transcribe] gateway=${upstream.status} ct=${upstreamCT} bytes=${text.length}`
       );
     }
 
     return new NextResponse(text, {
       status: upstream.status,
-      headers: { "content-type": contentType },
+      headers: { "content-type": upstreamCT },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
