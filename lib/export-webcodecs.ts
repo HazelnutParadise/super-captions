@@ -28,21 +28,41 @@ export interface WebCodecsExportResult {
   blob: Blob;
 }
 
+export type WebCodecsUnavailableReason =
+  | "ssr"
+  | "insecure-context"
+  | "missing-video-encoder"
+  | "missing-audio-encoder"
+  | "missing-video-frame"
+  | "missing-audio-data"
+  | "codec-unsupported";
+
 /**
  * Returns true iff the browser exposes the WebCodecs surface we need for the
  * fast MP4 export path: HW-backed VideoEncoder + AudioEncoder, plus a way to
  * stream PCM out of the offscreen video. We also need AAC encoding support.
  */
 export function isWebCodecsExportSupported(): boolean {
-  if (typeof window === "undefined") return false;
-  // VideoFrame / VideoEncoder / AudioData / AudioEncoder must exist.
-  // mp4-muxer needs to encode AVC + AAC.
-  return (
-    typeof window.VideoEncoder !== "undefined" &&
-    typeof window.AudioEncoder !== "undefined" &&
-    typeof window.VideoFrame !== "undefined" &&
-    typeof window.AudioData !== "undefined"
-  );
+  return webCodecsUnavailableReason() === null;
+}
+
+/**
+ * Same check as isWebCodecsExportSupported but reports *why* if the surface
+ * is missing. Lets the UI explain "this site needs HTTPS for WebCodecs"
+ * instead of silently downgrading to ffmpeg.wasm.
+ *
+ * The most common gotcha is `insecure-context` — Chrome / Edge hide the
+ * VideoEncoder / AudioEncoder constructors entirely on plain http:// pages
+ * that aren't localhost, so just checking `typeof` is enough to surface it.
+ */
+export function webCodecsUnavailableReason(): WebCodecsUnavailableReason | null {
+  if (typeof window === "undefined") return "ssr";
+  if (!window.isSecureContext) return "insecure-context";
+  if (typeof window.VideoEncoder === "undefined") return "missing-video-encoder";
+  if (typeof window.AudioEncoder === "undefined") return "missing-audio-encoder";
+  if (typeof window.VideoFrame === "undefined") return "missing-video-frame";
+  if (typeof window.AudioData === "undefined") return "missing-audio-data";
+  return null;
 }
 
 /**

@@ -21,6 +21,20 @@ import {
   type ExportPhase,
   type ExportPipeline,
 } from "@/lib/export-video";
+import {
+  webCodecsUnavailableReason,
+  type WebCodecsUnavailableReason,
+} from "@/lib/export-webcodecs";
+
+const REASON_LABEL: Record<WebCodecsUnavailableReason, string> = {
+  "ssr": "在伺服器端渲染中",
+  "insecure-context": "此頁面不在安全上下文（HTTPS / localhost）— Chrome 在純 HTTP 連線下不暴露 WebCodecs API",
+  "missing-video-encoder": "此瀏覽器沒有 VideoEncoder",
+  "missing-audio-encoder": "此瀏覽器沒有 AudioEncoder",
+  "missing-video-frame": "此瀏覽器沒有 VideoFrame",
+  "missing-audio-data": "此瀏覽器沒有 AudioData",
+  "codec-unsupported": "瀏覽器不支援 H.264 / AAC 編碼",
+};
 
 const PHASE_LABEL: Record<ExportPhase, string> = {
   recording: "錄製",
@@ -39,6 +53,7 @@ export function ExportBar() {
   const [phase, setPhase] = useState<ExportPhase>("recording");
   const [format, setFormat] = useState<ExportFormat>("mp4");
   const [pipeline, setPipeline] = useState<ExportPipeline | null>(null);
+  const [reason, setReason] = useState<WebCodecsUnavailableReason | null>(null);
 
   // Probe which pipeline the current format+resolution will actually use,
   // so the UI can show a "GPU 加速" badge before the user clicks export.
@@ -46,10 +61,17 @@ export function ExportBar() {
     let cancelled = false;
     probePipeline(format, videoSize.width || 1280, videoSize.height || 720, 30)
       .then((p) => {
-        if (!cancelled) setPipeline(p);
+        if (cancelled) return;
+        setPipeline(p);
+        // When MP4 falls back to ffmpeg.wasm we want to tell the user why
+        // — most often it's "you're on plain HTTP".
+        setReason(p === "ffmpeg" ? webCodecsUnavailableReason() : null);
       })
       .catch(() => {
-        if (!cancelled) setPipeline(null);
+        if (!cancelled) {
+          setPipeline(null);
+          setReason(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -142,7 +164,11 @@ export function ExportBar() {
           {pipeline === "ffmpeg" && (
             <span
               className="ml-1 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-300"
-              title="此瀏覽器不支援 WebCodecs，將使用 ffmpeg.wasm 做 MP4 轉檔"
+              title={
+                reason
+                  ? `WebCodecs 不可用：${REASON_LABEL[reason]}。將改用 ffmpeg.wasm 轉檔。`
+                  : "WebCodecs 不可用，將改用 ffmpeg.wasm 轉檔。"
+              }
             >
               <Cpu className="h-2.5 w-2.5" />
               CPU
