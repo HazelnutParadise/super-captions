@@ -18,7 +18,7 @@ export function AppHeader() {
             <span className="gradient-text">Super Captions</span>
           </div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-            Whisper · ffmpeg.wasm · Next.js
+            Powered by HazelnutParadise
           </div>
         </div>
       </Link>

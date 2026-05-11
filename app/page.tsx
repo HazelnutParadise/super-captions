@@ -1,6 +1,7 @@
 import { AppHeader } from "@/components/app-header";
 import { UploadCard } from "@/components/upload-card";
 import { HazelnutNavbar } from "@/components/hazelnut-navbar";
+import { RotatingHeadline } from "@/components/rotating-headline";
 import {
   Sparkles,
   ShieldCheck,
@@ -24,12 +25,8 @@ export default function Home() {
               On-device · Whisper Gateway · Studio-grade preview
             </span>
           </div>
-          <h1 className="text-4xl font-bold leading-tight tracking-tight md:text-5xl">
-            影片不用上傳，
-            <br />
-            <span className="gradient-text">字幕也能自動上好</span>。
-          </h1>
-          <p className="max-w-xl text-base leading-relaxed text-muted-foreground">
+          <RotatingHeadline />
+          <p className="text-metallic max-w-xl text-base leading-relaxed">
             全程在你的瀏覽器裡處理，<b>只把音訊送上雲</b>。
             多人對話自動分人、逐句校稿、樣式自選，最後字幕燒進影片直接下載。
           </p>

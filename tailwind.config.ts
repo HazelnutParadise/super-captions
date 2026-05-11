@@ -59,11 +59,17 @@ const config: Config = {
           "0%, 100%": { backgroundPosition: "0% 50%" },
           "50%": { backgroundPosition: "100% 50%" },
         },
+        "flip-in": {
+          "0%": { transform: "rotateX(-90deg)", opacity: "0" },
+          "60%": { transform: "rotateX(20deg)", opacity: "1" },
+          "100%": { transform: "rotateX(0deg)", opacity: "1" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "gradient-shift": "gradient-shift 8s ease infinite",
+        "flip-in": "flip-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both",
       },
     },
   },

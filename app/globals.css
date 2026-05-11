@@ -85,6 +85,28 @@
     animation: gradient-shift 8s ease infinite;
   }
 
+  .text-metallic {
+    background-image: linear-gradient(
+      90deg,
+      hsl(218 9% 48%) 0%,
+      hsl(220 6% 68%) 30%,
+      hsl(0 0% 95%) 50%,
+      hsl(220 6% 68%) 70%,
+      hsl(218 9% 48%) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    animation: metallic-shine 5s linear infinite;
+  }
+  .text-metallic b,
+  .text-metallic strong {
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
+
   .blur-orb {
     position: absolute;
     border-radius: 9999px;
@@ -92,6 +114,11 @@
     opacity: 0.45;
     pointer-events: none;
   }
+}
+
+@keyframes metallic-shine {
+  0% { background-position: 100% 50%; }
+  100% { background-position: -100% 50%; }
 }
 
 /* Hide native scrollbar in caption list while keeping scroll */
