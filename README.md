@@ -22,11 +22,13 @@ Set `WHISPER_GATEWAY_URL` if your gateway isn't on `whisper-gateway:5148`.
 
 ## Docker
 
-Drops onto an existing `infra-net` network and talks to the gateway at `whisper-gateway:5148`:
+Image is built on a pinned [`oven/bun:1.3.13-alpine`](https://hub.docker.com/r/oven/bun) — bump deliberately, never `:latest`. The container joins an existing `infra-net` network and resolves the gateway at `whisper-gateway:5148`:
 
 ```bash
 docker compose up -d --build
 ```
+
+The Dockerfile uses Bun for install, build, and runtime (`bun run server.js` on Next.js standalone output). The lockfile is `bun.lock`; `package-lock.json` is kept for local `npm` workflows.
 
 ## Architecture notes
 

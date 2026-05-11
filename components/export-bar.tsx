@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Download, Film, Loader2, FileText } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Download, Film, Loader2, FileText, Cpu, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -15,9 +15,11 @@ import {
 import { useProject } from "@/store/project-store";
 import {
   exportBurnedVideo,
+  probePipeline,
   segmentsToSRT,
   type ExportFormat,
   type ExportPhase,
+  type ExportPipeline,
 } from "@/lib/export-video";
 
 const PHASE_LABEL: Record<ExportPhase, string> = {
@@ -36,6 +38,23 @@ export function ExportBar() {
   const [progress, setProgress] = useState(0);
   const [phase, setPhase] = useState<ExportPhase>("recording");
   const [format, setFormat] = useState<ExportFormat>("mp4");
+  const [pipeline, setPipeline] = useState<ExportPipeline | null>(null);
+
+  // Probe which pipeline the current format+resolution will actually use,
+  // so the UI can show a "GPU 加速" badge before the user clicks export.
+  useEffect(() => {
+    let cancelled = false;
+    probePipeline(format, videoSize.width || 1280, videoSize.height || 720, 30)
+      .then((p) => {
+        if (!cancelled) setPipeline(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPipeline(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [format, videoSize.width, videoSize.height]);
 
   const downloadSRT = () => {
     const srt = segmentsToSRT(segments);
@@ -86,7 +105,16 @@ export function ExportBar() {
       }-captioned.${result.ext}`;
       a.click();
       URL.revokeObjectURL(url);
-      toast.success(`匯出完成 · ${result.ext.toUpperCase()}`, { id: toastId });
+      const pipelineLabel =
+        result.pipeline === "webcodecs"
+          ? "GPU"
+          : result.pipeline === "ffmpeg"
+          ? "ffmpeg.wasm"
+          : "WebM";
+      toast.success(
+        `匯出完成 · ${result.ext.toUpperCase()} (${pipelineLabel})`,
+        { id: toastId }
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.error(`匯出失敗：${msg}`, { id: toastId });
@@ -102,6 +130,24 @@ export function ExportBar() {
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Film className="h-4 w-4 text-fuchsia-400" />
           燒錄輸出
+          {pipeline === "webcodecs" && (
+            <span
+              className="ml-1 inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-300"
+              title="WebCodecs: 硬體加速 AVC + AAC，省去 WebM 中介轉檔"
+            >
+              <Zap className="h-2.5 w-2.5" />
+              GPU 加速
+            </span>
+          )}
+          {pipeline === "ffmpeg" && (
+            <span
+              className="ml-1 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-300"
+              title="此瀏覽器不支援 WebCodecs，將使用 ffmpeg.wasm 做 MP4 轉檔"
+            >
+              <Cpu className="h-2.5 w-2.5" />
+              CPU
+            </span>
+          )}
           {busy && (
             <span className="ml-2 inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-300">
               <span className="relative flex h-1.5 w-1.5">
@@ -113,7 +159,9 @@ export function ExportBar() {
           )}
         </div>
         <div className="text-xs text-muted-foreground">
-          {format === "mp4"
+          {format === "mp4" && pipeline === "webcodecs"
+            ? "WebCodecs 直接編 H.264 + AAC、HW 加速，無 WebM 中介轉檔"
+            : format === "mp4"
             ? "本機背景錄製 + ffmpeg.wasm 轉檔，輸出通用 MP4（H.264 / AAC）"
             : "本機背景錄製，輸出 WebM（VP9 / Opus，較快）"}
         </div>

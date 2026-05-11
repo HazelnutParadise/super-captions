@@ -2,12 +2,18 @@
 
 import { drawCaption, currentSegment } from "./caption-render";
 import { getFFmpeg } from "./ffmpeg-client";
+import {
+  exportBurnedVideoWebCodecs,
+  isWebCodecsExportSupported,
+  probeWebCodecsConfig,
+} from "./export-webcodecs";
 import { makeDefaultSpeaker, type CaptionSegment, type SpeakerStyle } from "./types";
 
 const FALLBACK_STYLE: SpeakerStyle = makeDefaultSpeaker("__fallback__", 0, "預設");
 
 export type ExportFormat = "mp4" | "webm";
 export type ExportPhase = "recording" | "transcoding";
+export type ExportPipeline = "webcodecs" | "ffmpeg" | "webm";
 
 export interface ExportOptions {
   /** Blob URL or file URL of the source video. */
@@ -27,6 +33,26 @@ export interface ExportResult {
   blob: Blob;
   ext: string;
   mimeType: string;
+  /** Which code path actually produced this file. */
+  pipeline: ExportPipeline;
+}
+
+/**
+ * Tells the UI which pipeline a given format would use *right now* — useful
+ * for showing a "GPU 加速" badge before the user clicks export.
+ */
+export async function probePipeline(
+  format: ExportFormat,
+  width: number,
+  height: number,
+  fps = 30
+): Promise<ExportPipeline> {
+  if (format === "webm") return "webm";
+  if (isWebCodecsExportSupported()) {
+    const ok = await probeWebCodecsConfig(width, height, fps);
+    if (ok) return "webcodecs";
+  }
+  return "ffmpeg";
 }
 
 function pickRecorderMime(): string {
@@ -67,6 +93,38 @@ export async function exportBurnedVideo(
   const { videoUrl, segments, speakers, width, height } = opts;
   const fps = opts.fps ?? 30;
   const format: ExportFormat = opts.format ?? "mp4";
+
+  // Fast path: MP4 via WebCodecs (HW AVC + AAC, no WebM intermediate).
+  if (format === "mp4" && isWebCodecsExportSupported()) {
+    const supported = await probeWebCodecsConfig(width, height, fps);
+    if (supported) {
+      try {
+        const { blob } = await exportBurnedVideoWebCodecs({
+          videoUrl,
+          segments,
+          speakers,
+          width,
+          height,
+          fps,
+          videoBitrate: opts.videoBitsPerSecond,
+          onProgress: opts.onProgress,
+          signal: opts.signal,
+        });
+        return {
+          blob,
+          ext: "mp4",
+          mimeType: "video/mp4",
+          pipeline: "webcodecs",
+        };
+      } catch (err) {
+        // Fall through to MediaRecorder + ffmpeg path.
+        console.warn(
+          "[export] WebCodecs path failed, falling back to ffmpeg:",
+          err
+        );
+      }
+    }
+  }
 
   const offscreen = document.createElement("video");
   offscreen.src = videoUrl;
@@ -227,13 +285,18 @@ export async function exportBurnedVideo(
 
   const webmBlob = new Blob(chunks, { type: mimeType });
   if (format === "webm") {
-    return { blob: webmBlob, ext: "webm", mimeType };
+    return { blob: webmBlob, ext: "webm", mimeType, pipeline: "webm" };
   }
 
   const mp4Blob = await transcodeToMp4(webmBlob, (r) =>
     opts.onProgress?.("transcoding", r)
   );
-  return { blob: mp4Blob, ext: "mp4", mimeType: "video/mp4" };
+  return {
+    blob: mp4Blob,
+    ext: "mp4",
+    mimeType: "video/mp4",
+    pipeline: "ffmpeg",
+  };
 }
 
 function drawFrame(
