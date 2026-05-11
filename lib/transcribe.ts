@@ -1,4 +1,5 @@
 import type { CaptionSegment } from "./types";
+import { convertChinese, type ChineseScript } from "./chinese-convert";
 
 /**
  * Response shape from 榛果繽紛樂's whisper-api when `advanced=true`.
@@ -45,6 +46,13 @@ export interface TranscribeOptions {
   diarize?: boolean;
   minSpeakers?: number;
   maxSpeakers?: number;
+  /**
+   * If set, every Chinese character in the returned segments is normalised
+   * to the requested script via OpenCC before being shown to the user.
+   * Whisper itself has no zh-TW vs zh-CN distinction, so this is the only
+   * way to guarantee Traditional or Simplified output consistently.
+   */
+  convertTo?: ChineseScript;
 }
 
 export async function transcribeAudio(
@@ -136,6 +144,16 @@ export async function transcribeAudio(
   // No segments came back — last-ditch: split flat text by sentence.
   if (segments.length === 0 && data.text && data.text.trim()) {
     segments = splitTextByDuration(data.text.trim(), null);
+  }
+
+  // OpenCC normalisation. Whisper doesn't distinguish zh-Hant from zh-Hans,
+  // so when the user explicitly asked for one we run every segment through
+  // OpenCC. Done in parallel; the dictionary is only fetched once.
+  if (options.convertTo && segments.length > 0) {
+    const target = options.convertTo;
+    segments = await Promise.all(
+      segments.map(async (s) => ({ ...s, text: await convertChinese(s.text, target) }))
+    );
   }
 
   return { segments, raw: data, speakerLabels };

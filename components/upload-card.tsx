@@ -126,10 +126,26 @@ export function UploadCard() {
 
       setStage("transcribing");
       setProgress(0);
+      // Whisper doesn't have separate zh-Hant / zh-Hans codes — both map
+      // onto "zh". The script choice is applied as a post-process via OpenCC.
+      const gatewayLang =
+        language === "auto"
+          ? undefined
+          : language === "zh-Hant" || language === "zh-Hans"
+            ? "zh"
+            : language;
+      const convertTo: "traditional" | "simplified" | undefined =
+        language === "zh-Hant"
+          ? "traditional"
+          : language === "zh-Hans"
+            ? "simplified"
+            : undefined;
+
       const { segments, speakerLabels } = await transcribeAudio(audio, {
         model: "whisper-1",
-        language: language === "auto" ? undefined : language,
+        language: gatewayLang,
         diarize: true,
+        convertTo,
       });
 
       // Materialise speakers from the backend's diarization result. If the
@@ -224,7 +240,8 @@ export function UploadCard() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="auto">自動偵測</SelectItem>
-              <SelectItem value="zh">中文 (繁中 / 簡中)</SelectItem>
+              <SelectItem value="zh-Hant">中文（繁體）</SelectItem>
+              <SelectItem value="zh-Hans">中文（簡體）</SelectItem>
               <SelectItem value="en">English</SelectItem>
               <SelectItem value="ja">日本語</SelectItem>
               <SelectItem value="ko">한국어</SelectItem>

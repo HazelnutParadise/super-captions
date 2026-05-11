@@ -21,7 +21,9 @@ export function RotatingHeadline() {
     return () => clearInterval(id);
   }, []);
 
-  const { top, bottom } = PAIRS[index];
+  // Modulo guards against HMR / future array shrinkage leaving a stale index
+  // out of bounds — without this we'd hit a destructure-of-undefined crash.
+  const { top, bottom } = PAIRS[index % PAIRS.length];
 
   return (
     <h1
