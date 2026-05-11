@@ -3,6 +3,10 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { toBlobURL } from "@ffmpeg/util";
 
+// FFFSType is a `declare enum` in @ffmpeg/ffmpeg's .d.ts — type-only, no
+// runtime value. The mount() API actually accepts the string at runtime.
+const WORKERFS = "WORKERFS" as never;
+
 let _ffmpeg: FFmpeg | null = null;
 let _loadPromise: Promise<FFmpeg> | null = null;
 
@@ -38,6 +42,11 @@ export async function getFFmpeg(
 /**
  * Extract a mono 16k MP3 from the user's video, entirely in-browser.
  * Returns a File suitable for upload to /api/transcribe.
+ *
+ * Uses WORKERFS to mount the File lazily — ffmpeg only reads the bytes
+ * it actually touches, so multi-GB videos work without loading the whole
+ * file into a single ArrayBuffer (browser ArrayBuffer caps at ~2-4 GB).
+ * Falls back to in-memory writeFile if mount fails.
  */
 export async function extractAudio(
   videoFile: File,
@@ -51,38 +60,86 @@ export async function extractAudio(
   }
 
   const ext = pickExtension(videoFile);
-  const inputName = `input.${ext}`;
+  const mountPoint = "/mnt";
+  const inputBlobName = `input.${ext}`;
   const outputName = "audio.mp3";
 
-  const inputBytes = await readFileBytes(videoFile);
-  await ffmpeg.writeFile(inputName, inputBytes);
-  await ffmpeg.exec([
-    "-i",
-    inputName,
-    "-vn",
-    "-ac",
-    "1",
-    "-ar",
-    "16000",
-    "-b:a",
-    "64k",
-    outputName,
-  ]);
+  let inputPath = inputBlobName;
+  let mounted = false;
+  let dirCreated = false;
 
-  const data = await ffmpeg.readFile(outputName);
-  // cleanup
   try {
-    await ffmpeg.deleteFile(inputName);
-    await ffmpeg.deleteFile(outputName);
-  } catch {
-    /* noop */
+    await ffmpeg.createDir(mountPoint);
+    dirCreated = true;
+    await ffmpeg.mount(
+      WORKERFS,
+      { blobs: [{ name: inputBlobName, data: videoFile }] },
+      mountPoint
+    );
+    mounted = true;
+    inputPath = `${mountPoint}/${inputBlobName}`;
+  } catch (e) {
+    console.warn(
+      "[ffmpeg-client] WORKERFS mount unavailable, loading file into memory:",
+      e
+    );
+    if (mounted) {
+      try {
+        await ffmpeg.unmount(mountPoint);
+      } catch {}
+      mounted = false;
+    }
+    if (dirCreated) {
+      try {
+        await ffmpeg.deleteDir(mountPoint);
+      } catch {}
+      dirCreated = false;
+    }
+    const bytes = await readFileBytes(videoFile);
+    await ffmpeg.writeFile(inputBlobName, bytes);
+    inputPath = inputBlobName;
   }
-  const bytes = data as Uint8Array;
-  const arrayBuffer = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  ) as ArrayBuffer;
-  return new File([arrayBuffer], "audio.mp3", { type: "audio/mpeg" });
+
+  try {
+    await ffmpeg.exec([
+      "-i",
+      inputPath,
+      "-vn",
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-b:a",
+      "64k",
+      outputName,
+    ]);
+
+    const data = await ffmpeg.readFile(outputName);
+    const bytes = data as Uint8Array;
+    const arrayBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer;
+    return new File([arrayBuffer], "audio.mp3", { type: "audio/mpeg" });
+  } finally {
+    try {
+      await ffmpeg.deleteFile(outputName);
+    } catch {}
+    if (mounted) {
+      try {
+        await ffmpeg.unmount(mountPoint);
+      } catch {}
+    } else {
+      try {
+        await ffmpeg.deleteFile(inputBlobName);
+      } catch {}
+    }
+    if (dirCreated) {
+      try {
+        await ffmpeg.deleteDir(mountPoint);
+      } catch {}
+    }
+  }
 }
 
 const MIME_TO_EXT: Record<string, string> = {
