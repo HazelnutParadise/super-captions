@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 600;
 
 const GATEWAY =
-  process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5148";
+  process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5000";
 
 /**
  * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway. The

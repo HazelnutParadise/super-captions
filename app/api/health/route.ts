@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 const GATEWAY =
-  process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5148";
+  process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5000";
 
 export async function GET() {
   try {

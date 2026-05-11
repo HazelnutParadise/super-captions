@@ -9,7 +9,7 @@ services:
       - "50821:3000"
     environment:
       # Resolved over infra-net to the speech gateway container.
-      WHISPER_GATEWAY_URL: http://whisper-gateway:5148
+      WHISPER_GATEWAY_URL: http://whisper-gateway:5000
       NODE_ENV: production
     networks:
       - infra-net

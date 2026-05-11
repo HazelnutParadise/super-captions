@@ -4,7 +4,7 @@ A privacy-preserving web app that auto-captions videos:
 
 1. The user picks a video locally.
 2. Audio is extracted **in the browser** with `ffmpeg.wasm` — the video itself never leaves the device.
-3. The audio is sent to 榛果繽紛樂's OpenAI-compatible Whisper Gateway (e.g. `whisper-gateway:5148`).
+3. The audio is sent to 榛果繽紛樂's OpenAI-compatible Whisper Gateway (e.g. `whisper-gateway:5000`).
 4. The user previews the result side-by-side: video on the left, per-segment captions on the right, fully synchronised with the timeline.
 5. Captions can be edited per-segment, with optional speaker diarisation and per-speaker styling (background, text border, text fill, font, size, etc.).
 6. On export, captions are burned back into the video via Canvas + MediaRecorder, again entirely in-browser.
@@ -18,11 +18,11 @@ npm install
 npm run dev
 ```
 
-Set `WHISPER_GATEWAY_URL` if your gateway isn't on `whisper-gateway:5148`.
+Set `WHISPER_GATEWAY_URL` to a reachable gateway — from the host the gateway is on port `5148`, see `.env.example`.
 
 ## Docker
 
-Image is built on a pinned [`oven/bun:1.3.13-alpine`](https://hub.docker.com/r/oven/bun) — bump deliberately, never `:latest`. The container joins an existing `infra-net` network and resolves the gateway at `whisper-gateway:5148`:
+Image is built on a pinned [`oven/bun:1.3.13-alpine`](https://hub.docker.com/r/oven/bun) — bump deliberately, never `:latest`. The container joins an existing `infra-net` network and resolves the gateway at `whisper-gateway:5000`:
 
 ```bash
 docker compose up -d --build
