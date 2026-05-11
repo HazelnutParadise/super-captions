@@ -11,7 +11,6 @@ interface ProjectState {
 
   segments: CaptionSegment[];
   speakers: SpeakerStyle[];
-  diarizationEnabled: boolean;
   activeSegmentId: string | null;
   language: string;
 
@@ -24,7 +23,14 @@ interface ProjectState {
   setActiveSegment: (id: string | null) => void;
 
   setLanguage: (language: string) => void;
-  setDiarizationEnabled: (enabled: boolean) => void;
+  /**
+   * Replace the speaker list, used after a transcription discovers a new
+   * set of speakers. Pass an array of {id, name} hints; existing entries
+   * with matching ids keep their styling.
+   */
+  replaceSpeakers: (
+    next: { id: string; name: string }[]
+  ) => void;
   addSpeaker: () => string;
   removeSpeaker: (id: string) => void;
   updateSpeaker: (id: string, patch: Partial<SpeakerStyle>) => void;
@@ -32,11 +38,8 @@ interface ProjectState {
   reset: () => void;
 }
 
-function freshSpeakers(): SpeakerStyle[] {
-  return [
-    makeDefaultSpeaker("spk-1", 0, "講者 1"),
-    makeDefaultSpeaker("spk-2", 1, "講者 2"),
-  ];
+function defaultSpeakers(): SpeakerStyle[] {
+  return [makeDefaultSpeaker("spk-default", 0, "預設樣式")];
 }
 
 export const useProject = create<ProjectState>((set, get) => ({
@@ -46,8 +49,7 @@ export const useProject = create<ProjectState>((set, get) => ({
   videoSize: { width: 1280, height: 720 },
 
   segments: [],
-  speakers: freshSpeakers(),
-  diarizationEnabled: false,
+  speakers: defaultSpeakers(),
   activeSegmentId: null,
   language: "auto",
 
@@ -78,10 +80,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       const cur = s.segments[idx];
       const next = s.segments[idx + 1];
       const newStart = cur.end;
-      const newEnd = Math.min(
-        next ? next.start : cur.end + 2,
-        cur.end + 3
-      );
+      const newEnd = Math.min(next ? next.start : cur.end + 2, cur.end + 3);
       const newSeg: CaptionSegment = {
         id: `seg-new-${Date.now()}`,
         start: newStart,
@@ -96,7 +95,17 @@ export const useProject = create<ProjectState>((set, get) => ({
   setActiveSegment: (id) => set({ activeSegmentId: id }),
 
   setLanguage: (language) => set({ language }),
-  setDiarizationEnabled: (enabled) => set({ diarizationEnabled: enabled }),
+
+  replaceSpeakers: (next) =>
+    set((s) => {
+      const byId = new Map(s.speakers.map((sp) => [sp.id, sp]));
+      const speakers: SpeakerStyle[] = next.map((hint, i) => {
+        const existing = byId.get(hint.id);
+        if (existing) return { ...existing, name: hint.name };
+        return makeDefaultSpeaker(hint.id, i, hint.name);
+      });
+      return { speakers };
+    }),
 
   addSpeaker: () => {
     const id = `spk-${Date.now()}`;
@@ -124,8 +133,7 @@ export const useProject = create<ProjectState>((set, get) => ({
       videoUrl: null,
       videoDuration: 0,
       segments: [],
-      speakers: freshSpeakers(),
-      diarizationEnabled: false,
+      speakers: defaultSpeakers(),
       activeSegmentId: null,
       language: "auto",
     }),

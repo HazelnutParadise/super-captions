@@ -9,7 +9,7 @@ import { drawCaption, currentSegment } from "@/lib/caption-render";
 import { makeDefaultSpeaker, type SpeakerStyle } from "@/lib/types";
 import { cn, formatTime } from "@/lib/utils";
 
-const DEFAULT_STYLE: SpeakerStyle = makeDefaultSpeaker("__default__", 0, "預設");
+const FALLBACK_STYLE: SpeakerStyle = makeDefaultSpeaker("__fallback__", 0, "預設");
 
 export interface VideoPreviewHandle {
   video: () => HTMLVideoElement | null;
@@ -32,11 +32,14 @@ export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPre
   const speakers = useProject((s) => s.speakers);
   const activeSegmentId = useProject((s) => s.activeSegmentId);
   const setActiveSegment = useProject((s) => s.setActiveSegment);
+  const storedDuration = useProject((s) => s.videoDuration);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  // Seed from the store's videoDuration so the slider has a real range even
+  // before the <video> element fires loadedmetadata for the second time.
+  const [duration, setDuration] = useState(storedDuration);
 
   useImperativeHandle(
     exposedRef,
@@ -74,7 +77,8 @@ export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPre
       if (seg && seg.text.trim()) {
         const speaker =
           (seg.speakerId && speakers.find((sp) => sp.id === seg.speakerId)) ||
-          DEFAULT_STYLE;
+          speakers[0] ||
+          FALLBACK_STYLE;
         drawCaption(ctx, w, h, seg.text, speaker);
       }
       rafRef.current = requestAnimationFrame(draw);
@@ -88,6 +92,12 @@ export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPre
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+
+    // Pick up the metadata that may have arrived before this effect ran.
+    if (isFinite(v.duration) && v.duration > 0) {
+      setDuration(v.duration);
+    }
+
     const onTime = () => {
       setTime(v.currentTime);
       const seg = currentSegment(segments, v.currentTime);
@@ -95,16 +105,20 @@ export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPre
     };
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
-    const onLoaded = () => setDuration(v.duration);
+    const onDuration = () => {
+      if (isFinite(v.duration) && v.duration > 0) setDuration(v.duration);
+    };
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("play", onPlay);
     v.addEventListener("pause", onPause);
-    v.addEventListener("loadedmetadata", onLoaded);
+    v.addEventListener("loadedmetadata", onDuration);
+    v.addEventListener("durationchange", onDuration);
     return () => {
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("play", onPlay);
       v.removeEventListener("pause", onPause);
-      v.removeEventListener("loadedmetadata", onLoaded);
+      v.removeEventListener("loadedmetadata", onDuration);
+      v.removeEventListener("durationchange", onDuration);
     };
   }, [activeSegmentId, segments, setActiveSegment]);
 
@@ -118,7 +132,12 @@ export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPre
   const seek = (t: number) => {
     const v = videoRef.current;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min(duration || 0, t));
+    const max =
+      (isFinite(v.duration) && v.duration > 0 ? v.duration : 0) ||
+      duration ||
+      storedDuration ||
+      Infinity;
+    v.currentTime = Math.max(0, Math.min(max, t));
     setTime(v.currentTime);
   };
 
@@ -145,7 +164,6 @@ export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPre
               className="absolute inset-0 h-full w-full object-contain"
               muted={muted}
               playsInline
-              crossOrigin="anonymous"
             />
             <canvas
               ref={overlayRef}

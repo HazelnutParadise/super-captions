@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { Trash2, Plus, UserCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
+import { TimeInput } from "@/components/ui/time-input";
 import {
   Select,
   SelectContent,
@@ -23,7 +23,6 @@ export function CaptionList({ onSeek }: Props) {
   const segments = useProject((s) => s.segments);
   const speakers = useProject((s) => s.speakers);
   const activeSegmentId = useProject((s) => s.activeSegmentId);
-  const diarizationEnabled = useProject((s) => s.diarizationEnabled);
   const updateSegment = useProject((s) => s.updateSegment);
   const deleteSegment = useProject((s) => s.deleteSegment);
   const insertSegmentAfter = useProject((s) => s.insertSegmentAfter);
@@ -125,7 +124,7 @@ export function CaptionList({ onSeek }: Props) {
                     )}
                   />
                   <div className="flex flex-wrap items-center gap-2">
-                    {diarizationEnabled && (
+                    {speakers.length > 1 && (
                       <div onClick={(e) => e.stopPropagation()}>
                         <Select
                           value={seg.speakerId ?? "__none__"}
@@ -161,33 +160,23 @@ export function CaptionList({ onSeek }: Props) {
                       onClick={(e) => e.stopPropagation()}
                       className="flex items-center gap-1"
                     >
-                      <Input
-                        type="number"
-                        step={0.01}
+                      <TimeInput
+                        value={seg.start}
                         min={0}
-                        value={seg.start.toFixed(2)}
-                        onChange={(e) =>
-                          updateSegment(seg.id, {
-                            start: Math.max(0, parseFloat(e.target.value) || 0),
-                          })
+                        max={seg.end - 0.05}
+                        onChange={(v) =>
+                          updateSegment(seg.id, { start: v })
                         }
-                        className="h-7 w-20 text-xs"
+                        className="w-[100px]"
                       />
                       <span className="text-xs text-muted-foreground">→</span>
-                      <Input
-                        type="number"
-                        step={0.01}
-                        min={0}
-                        value={seg.end.toFixed(2)}
-                        onChange={(e) =>
-                          updateSegment(seg.id, {
-                            end: Math.max(
-                              seg.start + 0.05,
-                              parseFloat(e.target.value) || seg.end
-                            ),
-                          })
+                      <TimeInput
+                        value={seg.end}
+                        min={seg.start + 0.05}
+                        onChange={(v) =>
+                          updateSegment(seg.id, { end: v })
                         }
-                        className="h-7 w-20 text-xs"
+                        className="w-[100px]"
                       />
                     </div>
                     <div className="ml-auto flex items-center gap-1">

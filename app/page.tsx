@@ -1,5 +1,6 @@
 import { AppHeader } from "@/components/app-header";
 import { UploadCard } from "@/components/upload-card";
+import { HazelnutNavbar } from "@/components/hazelnut-navbar";
 import { Sparkles, AudioWaveform, ScanLine, Film } from "lucide-react";
 
 export default function Home() {
@@ -61,6 +62,8 @@ export default function Home() {
           <StatCard num="4" title="預覽與燒錄" desc="逐句校稿後輸出影片" />
         </div>
       </section>
+
+      <HazelnutNavbar />
     </main>
   );
 }

@@ -1,11 +1,10 @@
 "use client";
 
-import { Plus, Trash2, UserCircle2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -20,43 +19,31 @@ import {
 } from "@/components/ui/popover";
 import { DEFAULT_FONTS } from "@/lib/types";
 import { useProject } from "@/store/project-store";
-import { cn } from "@/lib/utils";
 
 export function SpeakerPanel() {
   const speakers = useProject((s) => s.speakers);
-  const diarization = useProject((s) => s.diarizationEnabled);
-  const setDiarization = useProject((s) => s.setDiarizationEnabled);
   const addSpeaker = useProject((s) => s.addSpeaker);
   const removeSpeaker = useProject((s) => s.removeSpeaker);
   const updateSpeaker = useProject((s) => s.updateSpeaker);
+
+  const multiSpeaker = speakers.length > 1;
 
   return (
     <div className="scrollbar-thin flex h-full flex-col overflow-y-auto rounded-xl border border-border/60 bg-card/40 backdrop-blur">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/60 bg-card/80 px-4 py-3 backdrop-blur">
         <div>
-          <div className="text-sm font-semibold">講者樣式</div>
-          <div className="text-xs text-muted-foreground">
-            每位講者可獨立設定底色、字邊框、字填滿
+          <div className="text-sm font-semibold">
+            {multiSpeaker ? "講者樣式" : "字幕樣式"}
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Label htmlFor="diar-toggle" className="text-xs">
-            區分講者
-          </Label>
-          <Switch
-            id="diar-toggle"
-            checked={diarization}
-            onCheckedChange={setDiarization}
-          />
+          <div className="text-xs text-muted-foreground">
+            {multiSpeaker
+              ? "每位講者可獨立設定底色、字邊框、字填滿"
+              : "編輯預設樣式，或新增更多講者建立差異樣式"}
+          </div>
         </div>
       </div>
 
-      <div
-        className={cn(
-          "flex-1 space-y-3 p-3 transition-opacity",
-          !diarization && "pointer-events-none opacity-50"
-        )}
-      >
+      <div className="flex-1 space-y-3 p-3">
         {speakers.map((sp) => (
           <div
             key={sp.id}

@@ -1,38 +1,73 @@
 import type { CaptionSegment } from "./types";
 
-interface AnySegment {
+/**
+ * Response shape from 榛果繽紛樂's whisper-api when `advanced=true`.
+ * See whisper_service/schemas.py in HazelnutParadise/whisper-api.
+ */
+interface AdvancedResponse {
+  text?: string;
+  language?: string;
+  segments?: SegmentTimestamp[];
+  diarization?: DiarizationSegment[];
+  speakers?: string[];
+}
+
+interface SegmentTimestamp {
   id?: number;
   start?: number;
   end?: number;
   text?: string;
-  // Some ASR backends use `timestamp: [start, end]` instead of start/end.
-  timestamp?: [number | null, number | null];
+  speaker?: string | null;
+  words?: WordTimestamp[];
 }
 
-interface AnyResponse {
+interface WordTimestamp {
+  word: string;
+  start?: number;
+  end?: number;
+  speaker?: string | null;
+}
+
+interface DiarizationSegment {
+  speaker: string;
+  start: number;
+  end: number;
+}
+
+interface SimpleResponse {
   text?: string;
+}
+
+export interface TranscribeOptions {
+  model?: string;
   language?: string;
-  duration?: number;
-  segments?: AnySegment[];
-  chunks?: AnySegment[];
-  // OpenAI verbose_json variant with words.
-  words?: { word: string; start: number; end: number }[];
+  /** When true, ask the backend to do speaker diarization. */
+  diarize?: boolean;
+  minSpeakers?: number;
+  maxSpeakers?: number;
 }
 
 export async function transcribeAudio(
   audioFile: File,
-  options: { model?: string; language?: string } = {}
+  options: TranscribeOptions = {}
 ): Promise<{
   segments: CaptionSegment[];
-  raw: AnyResponse;
+  raw: AdvancedResponse | SimpleResponse;
+  speakerLabels: string[];
 }> {
   const form = new FormData();
   form.append("file", audioFile);
   form.append("model", options.model ?? "whisper-1");
-  form.append("response_format", "verbose_json");
-  form.append("timestamp_granularities[]", "segment");
-  form.append("timestamp_granularities[]", "word");
+  form.append("advanced", "true");
   if (options.language) form.append("language", options.language);
+
+  // `diarize` defaults to true on the backend. Send the explicit value so a
+  // user toggle of "off" is respected.
+  form.append("diarize", options.diarize === false ? "false" : "true");
+  if (options.minSpeakers)
+    form.append("min_speakers", String(options.minSpeakers));
+  if (options.maxSpeakers)
+    form.append("max_speakers", String(options.maxSpeakers));
 
   const r = await fetch("/api/transcribe", { method: "POST", body: form });
   if (!r.ok) {
@@ -40,104 +75,60 @@ export async function transcribeAudio(
     throw new Error(`Transcription failed: ${r.status} ${text}`);
   }
 
-  // The gateway might return text/plain SRT/VTT, or JSON — be tolerant.
-  const ct = r.headers.get("content-type") ?? "";
   const bodyText = await r.text();
-  let data: AnyResponse | null = null;
-  if (ct.includes("application/json")) {
-    try {
-      data = JSON.parse(bodyText) as AnyResponse;
-    } catch {
-      /* fall through */
-    }
-  } else {
-    // Maybe still JSON despite a different content-type.
-    try {
-      data = JSON.parse(bodyText) as AnyResponse;
-    } catch {
-      data = { text: bodyText };
-    }
-  }
-  if (!data) data = { text: bodyText };
-
-  // Normalise to OpenAI-style segments.
-  const raw: AnySegment[] = data.segments ?? data.chunks ?? [];
-  let segments: CaptionSegment[] = raw
-    .map((s, i) => {
-      const start =
-        typeof s.start === "number"
-          ? s.start
-          : Array.isArray(s.timestamp)
-          ? s.timestamp[0] ?? 0
-          : 0;
-      const end =
-        typeof s.end === "number"
-          ? s.end
-          : Array.isArray(s.timestamp)
-          ? s.timestamp[1] ?? start + 2
-          : start + 2;
-      return {
-        id: `seg-${i}-${Math.round(start * 1000)}`,
-        start,
-        end: Math.max(end, start + 0.05),
-        text: (s.text ?? "").trim(),
-        speakerId: null as string | null,
-      };
-    })
-    .filter((s) => s.text.length > 0);
-
-  // Fallback 1: gateway returned word-level only — group every ~7 words.
-  if (segments.length === 0 && data.words && data.words.length) {
-    segments = chunkWords(data.words, 7);
+  let data: AdvancedResponse | SimpleResponse;
+  try {
+    data = JSON.parse(bodyText);
+  } catch {
+    data = { text: bodyText };
   }
 
-  // Fallback 2: gateway returned only flat text — split by sentence and
-  // spread evenly across the known duration so the timeline still works.
+  const advanced = data as AdvancedResponse;
+  const speakerLabels: string[] = Array.isArray(advanced.speakers)
+    ? advanced.speakers.slice()
+    : [];
+
+  let segments: CaptionSegment[] = [];
+
+  if (Array.isArray(advanced.segments) && advanced.segments.length > 0) {
+    segments = advanced.segments
+      .map((s, i) => {
+        const start = typeof s.start === "number" ? s.start : 0;
+        const end =
+          typeof s.end === "number" ? s.end : start + Math.max(0.5, 2);
+        const speaker = s.speaker ?? null;
+        if (speaker && !speakerLabels.includes(speaker))
+          speakerLabels.push(speaker);
+        return {
+          id: `seg-${i}-${Math.round(start * 1000)}`,
+          start,
+          end: Math.max(end, start + 0.05),
+          text: (s.text ?? "").trim(),
+          speakerId: speaker,
+        };
+      })
+      .filter((s) => s.text.length > 0);
+  }
+
+  // No segments came back — last-ditch: split flat text by sentence.
   if (segments.length === 0 && data.text && data.text.trim()) {
-    segments = splitTextByDuration(data.text.trim(), data.duration ?? null);
+    segments = splitTextByDuration(data.text.trim(), null);
   }
 
-  return { segments, raw: data };
-}
-
-function chunkWords(
-  words: { word: string; start: number; end: number }[],
-  groupSize: number
-): CaptionSegment[] {
-  const out: CaptionSegment[] = [];
-  for (let i = 0; i < words.length; i += groupSize) {
-    const chunk = words.slice(i, i + groupSize);
-    const start = chunk[0].start;
-    const end = chunk[chunk.length - 1].end;
-    out.push({
-      id: `seg-w-${i}`,
-      start,
-      end: Math.max(end, start + 0.05),
-      text: chunk
-        .map((w) => w.word)
-        .join("")
-        .trim(),
-      speakerId: null,
-    });
-  }
-  return out;
+  return { segments, raw: data, speakerLabels };
 }
 
 function splitTextByDuration(
   text: string,
   duration: number | null
 ): CaptionSegment[] {
-  // Split by sentence boundaries (works for zh/en/ja/ko punctuation).
   const parts = text
     .split(/(?<=[。！？.!?…?！])\s*|\n+/)
     .map((p) => p.trim())
     .filter(Boolean);
   if (parts.length === 0) return [];
-
-  // If we don't know the duration, give each line a 3s slot.
   const totalLen = parts.reduce((n, p) => n + p.length, 0);
   const total = duration && duration > 0 ? duration : parts.length * 3;
-
   const out: CaptionSegment[] = [];
   let t = 0;
   for (let i = 0; i < parts.length; i++) {

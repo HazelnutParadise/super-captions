@@ -5,21 +5,37 @@ import { Download, Film, Loader2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useProject } from "@/store/project-store";
-import { exportBurnedVideo, segmentsToSRT } from "@/lib/export-video";
+import {
+  exportBurnedVideo,
+  segmentsToSRT,
+  type ExportFormat,
+  type ExportPhase,
+} from "@/lib/export-video";
 
-interface Props {
-  getVideo: () => HTMLVideoElement | null;
-}
+const PHASE_LABEL: Record<ExportPhase, string> = {
+  recording: "錄製",
+  transcoding: "轉檔",
+};
 
-export function ExportBar({ getVideo }: Props) {
+export function ExportBar() {
   const segments = useProject((s) => s.segments);
   const speakers = useProject((s) => s.speakers);
   const videoSize = useProject((s) => s.videoSize);
+  const videoUrl = useProject((s) => s.videoUrl);
   const videoFile = useProject((s) => s.videoFile);
 
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState<ExportPhase>("recording");
+  const [format, setFormat] = useState<ExportFormat>("mp4");
 
   const downloadSRT = () => {
     const srt = segmentsToSRT(segments);
@@ -33,36 +49,47 @@ export function ExportBar({ getVideo }: Props) {
   };
 
   const burnAndDownload = async () => {
-    const video = getVideo();
-    if (!video) {
-      toast.error("找不到影片元素");
+    if (!videoUrl) {
+      toast.error("找不到影片來源");
       return;
     }
     setBusy(true);
     setProgress(0);
-    const t = toast.loading("正在燒錄字幕到影片…");
+    setPhase("recording");
+    const toastId = toast.loading(
+      format === "mp4"
+        ? "背景錄製中… 完成後會自動轉成 MP4，預覽不受影響"
+        : "背景錄製中… 預覽不受影響"
+    );
     try {
-      const blob = await exportBurnedVideo({
-        video,
+      const result = await exportBurnedVideo({
+        videoUrl,
         segments,
         speakers,
-        width: videoSize.width || video.videoWidth || 1280,
-        height: videoSize.height || video.videoHeight || 720,
+        width: videoSize.width || 1280,
+        height: videoSize.height || 720,
         fps: 30,
-        onProgress: (r) => setProgress(r * 100),
+        format,
+        onProgress: (ph, r) => {
+          setPhase(ph);
+          setProgress(r * 100);
+          if (ph === "transcoding") {
+            toast.loading("轉檔為 MP4 中…", { id: toastId });
+          }
+        },
       });
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(result.blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `${
         videoFile?.name?.replace(/\.[^.]+$/, "") || "video"
-      }-captioned.webm`;
+      }-captioned.${result.ext}`;
       a.click();
       URL.revokeObjectURL(url);
-      toast.success("匯出完成", { id: t });
+      toast.success(`匯出完成 · ${result.ext.toUpperCase()}`, { id: toastId });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.error(`匯出失敗：${msg}`, { id: t });
+      toast.error(`匯出失敗：${msg}`, { id: toastId });
     } finally {
       setBusy(false);
       setProgress(0);
@@ -75,21 +102,50 @@ export function ExportBar({ getVideo }: Props) {
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Film className="h-4 w-4 text-fuchsia-400" />
           燒錄輸出
+          {busy && (
+            <span className="ml-2 inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-300">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-red-500" />
+              </span>
+              背景錄製
+            </span>
+          )}
         </div>
         <div className="text-xs text-muted-foreground">
-          匯出時會即時播放影片並錄製為 WebM，影片不會傳到伺服器
+          {format === "mp4"
+            ? "本機背景錄製 + ffmpeg.wasm 轉檔，輸出通用 MP4（H.264 / AAC）"
+            : "本機背景錄製，輸出 WebM（VP9 / Opus，較快）"}
         </div>
       </div>
 
       <div className="flex flex-col items-stretch gap-2 md:flex-row md:items-center">
         {busy && (
-          <div className="flex w-44 items-center gap-2">
+          <div className="flex w-56 items-center gap-2">
+            <span className="w-10 shrink-0 text-right text-[10px] uppercase tracking-widest text-muted-foreground">
+              {PHASE_LABEL[phase]}
+            </span>
             <Progress value={progress} className="flex-1" />
             <span className="w-9 text-right font-mono text-xs">
               {Math.round(progress)}%
             </span>
           </div>
         )}
+
+        <Select
+          value={format}
+          onValueChange={(v) => setFormat(v as ExportFormat)}
+          disabled={busy}
+        >
+          <SelectTrigger className="h-9 w-[120px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="mp4">MP4 · H.264</SelectItem>
+            <SelectItem value="webm">WebM · 快速</SelectItem>
+          </SelectContent>
+        </Select>
+
         <Button
           variant="outline"
           size="sm"
@@ -110,7 +166,7 @@ export function ExportBar({ getVideo }: Props) {
           ) : (
             <Download className="h-4 w-4" />
           )}
-          燒錄並下載影片
+          燒錄並下載
         </Button>
       </div>
     </div>

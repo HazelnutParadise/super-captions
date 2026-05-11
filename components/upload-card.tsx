@@ -21,7 +21,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { extractAudio } from "@/lib/ffmpeg-client";
 import { transcribeAudio } from "@/lib/transcribe";
 import { useProject } from "@/store/project-store";
@@ -49,45 +48,43 @@ export function UploadCard() {
   const setVideo = useProject((s) => s.setVideo);
   const setSegments = useProject((s) => s.setSegments);
   const setVideoMeta = useProject((s) => s.setVideoMeta);
+  const replaceSpeakers = useProject((s) => s.replaceSpeakers);
   const language = useProject((s) => s.language);
   const setLanguage = useProject((s) => s.setLanguage);
-  const diarizationEnabled = useProject((s) => s.diarizationEnabled);
-  const setDiarizationEnabled = useProject((s) => s.setDiarizationEnabled);
 
   const probeVideoMeta = useCallback(
     (f: File) =>
-      new Promise<{ duration: number; width: number; height: number }>((resolve) => {
-        const video = document.createElement("video");
-        video.preload = "metadata";
-        const url = URL.createObjectURL(f);
-        video.src = url;
-        video.onloadedmetadata = () => {
-          const meta = {
-            duration: video.duration,
-            width: video.videoWidth,
-            height: video.videoHeight,
+      new Promise<{ duration: number; width: number; height: number }>(
+        (resolve) => {
+          const video = document.createElement("video");
+          video.preload = "metadata";
+          const url = URL.createObjectURL(f);
+          video.src = url;
+          video.onloadedmetadata = () => {
+            const meta = {
+              duration: video.duration,
+              width: video.videoWidth,
+              height: video.videoHeight,
+            };
+            URL.revokeObjectURL(url);
+            resolve(meta);
           };
-          URL.revokeObjectURL(url);
-          resolve(meta);
-        };
-        video.onerror = () => {
-          URL.revokeObjectURL(url);
-          resolve({ duration: 0, width: 1280, height: 720 });
-        };
-      }),
+          video.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve({ duration: 0, width: 1280, height: 720 });
+          };
+        }
+      ),
     []
   );
 
-  const handleFile = useCallback(
-    async (f: File) => {
-      if (!f.type.startsWith("video/")) {
-        toast.error("請選擇影片檔案");
-        return;
-      }
-      setFile(f);
-    },
-    []
-  );
+  const handleFile = useCallback(async (f: File) => {
+    if (!f.type.startsWith("video/")) {
+      toast.error("請選擇影片檔案");
+      return;
+    }
+    setFile(f);
+  }, []);
 
   const onPickClick = () => inputRef.current?.click();
   const onPickChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -104,6 +101,12 @@ export function UploadCard() {
     },
     [handleFile]
   );
+
+  function humaniseSpeakerLabel(label: string, idx: number) {
+    const m = label.match(/(\d+)/);
+    if (m) return `講者 ${parseInt(m[1], 10) + 1}`;
+    return `講者 ${idx + 1}`;
+  }
 
   const start = async () => {
     if (!file) {
@@ -123,14 +126,45 @@ export function UploadCard() {
 
       setStage("transcribing");
       setProgress(0);
-      const { segments } = await transcribeAudio(audio, {
+      const { segments, speakerLabels } = await transcribeAudio(audio, {
         model: "whisper-1",
         language: language === "auto" ? undefined : language,
+        diarize: true,
       });
-      setSegments(segments);
+
+      // Materialise speakers from the backend's diarization result. If the
+      // backend found multiple speakers, each gets its own SpeakerStyle. If
+      // only one (or none), we keep a single default style.
+      let finalSegments = segments;
+      if (speakerLabels.length > 1) {
+        const speakerHints = speakerLabels.map((label, i) => ({
+          id: `spk-${label}`,
+          name: humaniseSpeakerLabel(label, i),
+        }));
+        replaceSpeakers(speakerHints);
+        const labelToId = new Map(
+          speakerLabels.map((label) => [label, `spk-${label}`])
+        );
+        finalSegments = segments.map((s) =>
+          s.speakerId && labelToId.has(s.speakerId)
+            ? { ...s, speakerId: labelToId.get(s.speakerId)! }
+            : { ...s, speakerId: null }
+        );
+      } else {
+        replaceSpeakers([{ id: "spk-default", name: "預設樣式" }]);
+        finalSegments = segments.map((s) => ({ ...s, speakerId: null }));
+      }
+
+      setSegments(finalSegments);
 
       setStage("done");
-      toast.success(`生成 ${segments.length} 句字幕`);
+      toast.success(
+        `生成 ${finalSegments.length} 句字幕${
+          speakerLabels.length > 1
+            ? ` · 偵測到 ${speakerLabels.length} 位講者`
+            : ""
+        }`
+      );
       router.push("/editor");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -143,7 +177,7 @@ export function UploadCard() {
   const busy = stage !== "idle" && stage !== "done";
 
   return (
-    <Card className="glow-card border-border/60 bg-card/60 p-8 backdrop-blur-xl">
+    <Card className="border-border/60 bg-card/60 p-8 backdrop-blur-xl">
       <div className="space-y-6">
         <div
           onDragOver={(e) => {
@@ -180,37 +214,25 @@ export function UploadCard() {
           </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
-              <Languages className="h-3.5 w-3.5" /> 字幕語言
-            </Label>
-            <Select value={language} onValueChange={setLanguage}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">自動偵測</SelectItem>
-                <SelectItem value="zh">中文 (繁中 / 簡中)</SelectItem>
-                <SelectItem value="en">English</SelectItem>
-                <SelectItem value="ja">日本語</SelectItem>
-                <SelectItem value="ko">한국어</SelectItem>
-                <SelectItem value="es">Español</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-end justify-between rounded-lg border border-border/60 bg-background/40 px-4 py-3">
-            <div>
-              <div className="text-sm font-medium">區分不同講者</div>
-              <div className="text-xs text-muted-foreground">
-                之後可以在編輯器為每句字幕指定講者並客製樣式
-              </div>
-            </div>
-            <Switch
-              checked={diarizationEnabled}
-              onCheckedChange={setDiarizationEnabled}
-            />
+        <div className="space-y-2">
+          <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+            <Languages className="h-3.5 w-3.5" /> 字幕語言
+          </Label>
+          <Select value={language} onValueChange={setLanguage}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">自動偵測</SelectItem>
+              <SelectItem value="zh">中文 (繁中 / 簡中)</SelectItem>
+              <SelectItem value="en">English</SelectItem>
+              <SelectItem value="ja">日本語</SelectItem>
+              <SelectItem value="ko">한국어</SelectItem>
+              <SelectItem value="es">Español</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="pt-1 text-[11px] text-muted-foreground">
+            講者分離已預設啟用 — 多人對話會自動建立不同樣式
           </div>
         </div>
 

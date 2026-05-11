@@ -27,7 +27,7 @@ export default function EditorPage() {
     <main className="relative min-h-screen pb-10">
       <AppHeader />
       <section className="container mx-auto space-y-4 px-6">
-        <ExportBar getVideo={() => previewRef.current?.video() ?? null} />
+        <ExportBar />
 
         <div className="grid gap-4 lg:grid-cols-[1.15fr_1fr]">
           <div className="space-y-3">
