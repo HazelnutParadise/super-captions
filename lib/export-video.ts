@@ -130,10 +130,12 @@ export async function exportBurnedVideo(
   offscreen.src = videoUrl;
   offscreen.preload = "auto";
   offscreen.playsInline = true;
-  // We're going to route audio through WebAudio anyway, but mark it muted on
-  // the element so the user never hears the export accidentally if the audio
-  // routing fails.
-  offscreen.muted = true;
+  // IMPORTANT: do NOT set `muted = true` here. createMediaElementSource()
+  // already reroutes the element's audio into the WebAudio graph (away from
+  // the speakers), so the export is inaudible regardless. But Chrome has an
+  // optimisation where a muted <video> skips audio decoding entirely, which
+  // leaves the MediaElementSource starved — the recorded file then has no
+  // audio track.
   Object.assign(offscreen.style, {
     position: "fixed",
     width: "1px",

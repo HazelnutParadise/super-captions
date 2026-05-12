@@ -121,7 +121,11 @@ export async function exportBurnedVideoWebCodecs(
   offscreen.src = videoUrl;
   offscreen.preload = "auto";
   offscreen.playsInline = true;
-  offscreen.muted = true;
+  // IMPORTANT: don't mute. Chrome skips audio decoding on muted <video>, so
+  // the ScriptProcessor below would never receive PCM samples and the
+  // exported MP4 would have a silent audio track. createMediaElementSource
+  // already reroutes audio away from the speakers, and the WebAudio graph
+  // below terminates through a 0-gain node, so nothing reaches the user.
   Object.assign(offscreen.style, {
     position: "fixed",
     width: "1px",
