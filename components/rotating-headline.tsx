@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 const PAIRS = [
   { top: "影片不用上傳", bottom: "字幕也能自動上好" },
-  { top: "影片不用上傳", bottom: "隱私就不會外流" },
+  { top: "影片不用上傳", bottom: "隱私就不會外洩" },
 ];
 
 const INTERVAL_MS = 3500;
