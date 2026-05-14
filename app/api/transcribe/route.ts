@@ -40,6 +40,11 @@ const MAX_QUEUE_DEPTH = 50;
 class Mutex {
   private locked = false;
   private waiters: Array<() => void> = [];
+  /** Monotonic counter of completed acquires. Combined with a per-handler
+   *  snapshot at enqueue time it lets us compute "how many jobs finished
+   *  since I joined" without having to track positions inside the waiters
+   *  array. */
+  private completedCount = 0;
 
   /** Number waiting + the one currently running (if any). */
   get pending(): number {
@@ -48,6 +53,9 @@ class Mutex {
   /** Number ahead of the next acquirer right now. */
   get waiting(): number {
     return this.waiters.length;
+  }
+  get completed(): number {
+    return this.completedCount;
   }
 
   async acquire(): Promise<() => void> {
@@ -59,6 +67,7 @@ class Mutex {
     return () => {
       if (released) return;
       released = true;
+      this.completedCount++;
       this.locked = false;
       const next = this.waiters.shift();
       if (next) next();
@@ -115,29 +124,41 @@ export async function POST(req: NextRequest) {
           /* controller may be closed */
         }
       };
+
+      // Snapshot the queue state at enqueue time so we can report a live
+      // "ahead = (initial ahead) - (jobs that finished since)" number to
+      // the client without inspecting the waiters array.
+      const initialAhead = gatewayLock.pending;
+      const completedAtEnqueue = gatewayLock.completed;
+      let acquired = false;
+      const computeAhead = () => {
+        if (acquired) return 0;
+        const finished = gatewayLock.completed - completedAtEnqueue;
+        return Math.max(0, initialAhead - finished);
+      };
+
       const heartbeat = setInterval(() => {
-        emit({
-          type: "ping",
-          t: Date.now() - t0,
-          queue: gatewayLock.pending,
-        });
-      }, 20_000);
+        if (acquired) {
+          emit({ type: "ping", t: Date.now() - t0 });
+        } else {
+          emit({ type: "queued", t: Date.now() - t0, ahead: computeAhead() });
+        }
+      }, 5_000);
 
       let release: (() => void) | null = null;
       try {
-        const ahead = gatewayLock.waiting + (gatewayLock.pending > 0 ? 1 : 0);
-        // ahead = the count of jobs that will finish before mine. If the
-        // lock isn't held, that's 0 (we acquire immediately).
-        if (ahead > 0) {
-          emit({ type: "queued", ahead });
+        if (initialAhead > 0) {
+          emit({ type: "queued", t: 0, ahead: initialAhead });
           console.log(
-            `[transcribe] queued behind ${ahead} request(s); waiting for slot`
+            `[transcribe] queued behind ${initialAhead} request(s); waiting for slot`
           );
         }
 
         release = await gatewayLock.acquire();
+        acquired = true;
         const waitedMs = Date.now() - t0;
-        if (ahead > 0) {
+        emit({ type: "processing", t: waitedMs });
+        if (initialAhead > 0) {
           console.log(
             `[transcribe] acquired gateway slot after ${waitedMs}ms in queue`
           );

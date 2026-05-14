@@ -26,12 +26,19 @@ import { transcribeAudio } from "@/lib/transcribe";
 import { useProject } from "@/store/project-store";
 import { cn, formatShort } from "@/lib/utils";
 
-type Stage = "idle" | "loading-ffmpeg" | "extracting" | "transcribing" | "done";
+type Stage =
+  | "idle"
+  | "loading-ffmpeg"
+  | "extracting"
+  | "queued"
+  | "transcribing"
+  | "done";
 
 const STAGE_LABEL: Record<Stage, string> = {
   idle: "等待影片",
   "loading-ffmpeg": "載入 FFmpeg.wasm…",
   extracting: "在瀏覽器內分離音訊…",
+  queued: "排隊中…",
   transcribing: "送至 Whisper Gateway 轉文字…",
   done: "完成 ✓",
 };
@@ -42,6 +49,7 @@ export function UploadCard() {
 
   const [stage, setStage] = useState<Stage>("idle");
   const [progress, setProgress] = useState(0);
+  const [queueAhead, setQueueAhead] = useState(0);
   const [hovered, setHovered] = useState(false);
   const [file, setFile] = useState<File | null>(null);
 
@@ -146,6 +154,14 @@ export function UploadCard() {
         language: gatewayLang,
         diarize: true,
         convertTo,
+        onQueueStatus: ({ ahead }) => {
+          setQueueAhead(ahead);
+          if (ahead > 0) setStage("queued");
+        },
+        onProcessing: () => {
+          setQueueAhead(0);
+          setStage("transcribing");
+        },
       });
 
       // Materialise speakers from the backend's diarization result. If the
@@ -187,6 +203,7 @@ export function UploadCard() {
       toast.error(`處理失敗：${msg}`);
       setStage("idle");
       setProgress(0);
+      setQueueAhead(0);
     }
   };
 
@@ -258,15 +275,31 @@ export function UploadCard() {
             <div className="flex items-center justify-between text-sm">
               <div className="flex items-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin text-fuchsia-400" />
-                <span>{STAGE_LABEL[stage]}</span>
+                <span>
+                  {stage === "queued"
+                    ? queueAhead > 0
+                      ? `排隊中 — 前面還有 ${queueAhead} 個`
+                      : "排隊中…"
+                    : STAGE_LABEL[stage]}
+                </span>
               </div>
               <span className="text-xs text-muted-foreground">
-                {stage === "transcribing"
-                  ? "上傳音訊到 Gateway"
-                  : `${Math.round(progress)}%`}
+                {stage === "queued"
+                  ? "等待 Gateway 空檔"
+                  : stage === "transcribing"
+                    ? "上傳音訊到 Gateway"
+                    : `${Math.round(progress)}%`}
               </span>
             </div>
-            <Progress value={stage === "transcribing" ? 100 : progress} />
+            <Progress
+              value={
+                stage === "queued"
+                  ? 100
+                  : stage === "transcribing"
+                    ? 100
+                    : progress
+              }
+            />
           </div>
         )}
 

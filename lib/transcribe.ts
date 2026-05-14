@@ -54,6 +54,14 @@ export interface TranscribeOptions {
    * way to guarantee Traditional or Simplified output consistently.
    */
   convertTo?: ChineseScript;
+  /**
+   * Fired whenever the proxy reports we're still in the gateway queue.
+   * `ahead` is the number of jobs that will run before ours. When `ahead`
+   * is 0 the gateway slot is ours and `onProcessing` will fire next.
+   */
+  onQueueStatus?: (status: { ahead: number }) => void;
+  /** Fired exactly once when the proxy acquires the gateway slot. */
+  onProcessing?: () => void;
 }
 
 export async function transcribeAudio(
@@ -83,23 +91,60 @@ export async function transcribeAudio(
     const text = await r.text();
     throw new Error(`Transcription failed: ${r.status} ${text}`);
   }
+  if (!r.body) {
+    throw new Error("Transcription failed: empty response body");
+  }
 
   // The proxy responds with an NDJSON keepalive stream (see
-  // app/api/transcribe/route.ts). We want the last line, which is the
-  // `{"type":"result", ...}` envelope wrapping the actual gateway body.
-  const streamText = await r.text();
-  const lines = streamText.split("\n").filter((l) => l.trim().length > 0);
-  const lastLine = lines[lines.length - 1] ?? "";
-  let envelope: { type: string; status: number; body: string };
-  try {
-    envelope = JSON.parse(lastLine);
-  } catch {
-    throw new Error(
-      `Transcription failed: malformed proxy response (${streamText.slice(-200)})`
-    );
+  // app/api/transcribe/route.ts). Lines we care about:
+  //   {"type":"queued","ahead":N}     ← still waiting for a gateway slot
+  //   {"type":"processing"}           ← slot acquired, gateway is running
+  //   {"type":"ping",...}             ← keepalive while processing
+  //   {"type":"result","status":N,"body":"..."}  ← final, always last
+  // We read incrementally so the UI can show live queue position.
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let envelope: { type: "result"; status: number; body: string } | null = null;
+
+  outer: while (true) {
+    const { value, done } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line) continue;
+      let msg: { type?: string; ahead?: number; status?: number; body?: string };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      switch (msg.type) {
+        case "queued":
+          options.onQueueStatus?.({ ahead: msg.ahead ?? 0 });
+          break;
+        case "processing":
+          options.onProcessing?.();
+          break;
+        case "result":
+          envelope = {
+            type: "result",
+            status: msg.status ?? 0,
+            body: msg.body ?? "",
+          };
+          break outer;
+        // "ping" and unknown types: ignore.
+      }
+    }
+    if (done) break;
   }
-  if (envelope.type !== "result") {
-    throw new Error(`Transcription failed: unexpected envelope type=${envelope.type}`);
+
+  if (!envelope) {
+    throw new Error(
+      `Transcription failed: stream ended without result envelope (tail=${buffer.slice(-200)})`
+    );
   }
   if (envelope.status < 200 || envelope.status >= 300) {
     throw new Error(
