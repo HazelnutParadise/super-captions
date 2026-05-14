@@ -74,11 +74,7 @@ export interface TranscribeOptions {
  *  work has reached the gateway. */
 class StreamDroppedBeforeResultError extends Error {
   constructor(public readonly buffer: string) {
-    super(
-      buffer
-        ? `Connection lost while queued (last buffered bytes: ${buffer.slice(-200)})`
-        : "Connection lost while queued"
-    );
+    super("與後端連線在排隊期間中斷");
     this.name = "StreamDroppedBeforeResultError";
   }
 }
@@ -112,11 +108,18 @@ export async function transcribeAudio(
         await new Promise((r) => setTimeout(r, backoffMs));
         continue;
       }
+      // Repack the final stream-drop error with a Chinese, user-facing
+      // message that also mentions we already retried.
+      if (e instanceof StreamDroppedBeforeResultError) {
+        throw new Error(
+          `與後端連線在排隊期間中斷，已自動重試 ${MAX_ATTEMPTS} 次仍失敗，請稍後再試。`
+        );
+      }
       throw e;
     }
   }
   // Unreachable in practice: the loop either returns or throws.
-  throw new Error("Transcription failed after exhausting retries");
+  throw new Error("轉錄失敗，已用盡所有重試。");
 }
 
 async function runTranscriptionAttempt(
