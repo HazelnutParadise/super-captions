@@ -7,44 +7,76 @@ export const maxDuration = 600;
 const GATEWAY =
   process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5000";
 
+/** Hard cap on how many requests can sit waiting for the gateway slot
+ *  before we start rejecting upfront with 503. Keeps memory bounded so an
+ *  abusive client can't queue 1000 multi-GB uploads at once. */
+const MAX_QUEUE_DEPTH = 8;
+
 /**
- * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway. The
- * gateway expects a multipart/form-data body with these fields (anything
- * else is silently dropped upstream, so the client is responsible for
- * only sending what it should):
+ * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway with two
+ * cross-cutting concerns layered on top of a plain fetch passthrough:
  *
- *   file          required — audio bytes
- *   model         "whisper-1" | "turbo"
- *   language      ISO code, omit for auto-detect
- *   advanced      "true" → segments[]/words[]/speakers[]
- *   diarize       defaults to true on the backend
- *   min_speakers  optional hint
- *   max_speakers  optional hint
+ *   1. Concurrency limit — the gateway runs Whisper end-to-end on one
+ *      audio stream at a time; sending it three concurrent multi-hour
+ *      jobs will OOM it. We serialise upstream calls through a process-
+ *      wide mutex so at most ONE request talks to the gateway at any
+ *      moment. Anything else queues.
  *
- * We intentionally do NOT call req.formData() — that buffers the entire
- * upload (potentially hundreds of MB for multi-hour videos) into memory,
- * which can OOM the container. Instead we pipe req.body straight to the
- * upstream fetch, with the original multipart boundary preserved.
+ *   2. Cloudflare 524 avoidance — Whisper takes minutes on long inputs
+ *      and CF cuts idle connections at 100 s. We respond with 200 + an
+ *      NDJSON stream immediately and emit `{"type":"ping",...}` every
+ *      20 s while waiting (both in queue and during upstream processing).
+ *      The final line `{"type":"result",status,body}` carries the gateway
+ *      response. CF never sees the connection go idle.
+ *
+ * We also never call req.formData() — that buffers the entire upload
+ * (potentially hundreds of MB for multi-hour videos) into memory. Once
+ * we get our slot, the request body is piped straight into the upstream
+ * fetch with its original multipart boundary intact.
  */
-/**
- * Whisper transcription on multi-hour audio can take several minutes.
- * Cloudflare's Free/Pro tiers cut idle connections at 100 s with a 524, so
- * we cannot simply return the upstream response synchronously.
- *
- * Workaround: respond immediately with a 200 + an NDJSON stream.
- *   - Every 20 s we emit `{"type":"ping",...}\n` as a keepalive.
- *   - When the gateway finally replies we emit a final
- *     `{"type":"result","status":<n>,"body":"<gateway body>"}\n` line.
- * From CF's POV bytes keep flowing, so the request never goes idle.
- * The client reads the whole body, locates the last NDJSON line and
- * unwraps the envelope.
- */
+
+// ---- in-process mutex --------------------------------------------------
+
+class Mutex {
+  private locked = false;
+  private waiters: Array<() => void> = [];
+
+  /** Number waiting + the one currently running (if any). */
+  get pending(): number {
+    return this.waiters.length + (this.locked ? 1 : 0);
+  }
+  /** Number ahead of the next acquirer right now. */
+  get waiting(): number {
+    return this.waiters.length;
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.locked) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    this.locked = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.locked = false;
+      const next = this.waiters.shift();
+      if (next) next();
+    };
+  }
+}
+
+const gatewayLock = new Mutex();
+
+// ---- handler -----------------------------------------------------------
+
 export async function POST(req: NextRequest) {
   const t0 = Date.now();
   const contentType = req.headers.get("content-type") ?? "";
   const contentLength = req.headers.get("content-length");
+  const pendingBefore = gatewayLock.pending;
   console.log(
-    `[transcribe] POST received ct=${contentType} cl=${contentLength ?? "n/a"} hasBody=${!!req.body}`
+    `[transcribe] POST received ct=${contentType} cl=${contentLength ?? "n/a"} hasBody=${!!req.body} queue=${pendingBefore}`
   );
 
   if (!contentType.startsWith("multipart/form-data")) {
@@ -56,70 +88,95 @@ export async function POST(req: NextRequest) {
   if (!req.body) {
     return NextResponse.json({ error: "Empty request body" }, { status: 400 });
   }
+  if (gatewayLock.pending >= MAX_QUEUE_DEPTH) {
+    console.warn(
+      `[transcribe] queue full (${gatewayLock.pending}/${MAX_QUEUE_DEPTH}); rejecting with 503`
+    );
+    return NextResponse.json(
+      { error: "Gateway busy, please retry later", queue: gatewayLock.pending },
+      { status: 503, headers: { "retry-after": "30" } }
+    );
+  }
 
-  const upstreamHeaders: Record<string, string> = { "content-type": contentType };
+  const upstreamHeaders: Record<string, string> = {
+    "content-type": contentType,
+  };
   if (contentLength) upstreamHeaders["content-length"] = contentLength;
 
-  console.log(`[transcribe] forwarding to ${GATEWAY}/v1/audio/transcriptions`);
-
-  // Kick the upstream fetch off *now* (not inside the stream's start callback)
-  // so that req.body begins draining into upstream immediately. The promise
-  // resolves once the gateway returns its response headers.
-  const upstreamPromise: Promise<
-    | { ok: true; status: number; body: string }
-    | { ok: false; status: number; body: string }
-  > = fetch(`${GATEWAY}/v1/audio/transcriptions`, {
-    method: "POST",
-    headers: upstreamHeaders,
-    body: req.body,
-    // @ts-expect-error — duplex is not yet in the lib.dom typings.
-    duplex: "half",
-  })
-    .then(async (r) => {
-      const body = await r.text();
-      console.log(
-        `[transcribe] upstream status=${r.status} bytes=${body.length} after ${Date.now() - t0}ms`
-      );
-      return { ok: r.ok, status: r.status, body };
-    })
-    .catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("[transcribe] upstream error:", msg);
-      return { ok: false, status: 502, body: JSON.stringify({ error: msg }) };
-    });
+  const reqBody = req.body;
 
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
+    async start(controller) {
       const encoder = new TextEncoder();
-      const heartbeat = setInterval(() => {
+      const emit = (obj: Record<string, unknown>) => {
         try {
-          controller.enqueue(
-            encoder.encode(
-              JSON.stringify({ type: "ping", t: Date.now() - t0 }) + "\n"
-            )
-          );
+          controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
         } catch {
-          /* controller may already be closed */
+          /* controller may be closed */
         }
+      };
+      const heartbeat = setInterval(() => {
+        emit({
+          type: "ping",
+          t: Date.now() - t0,
+          queue: gatewayLock.pending,
+        });
       }, 20_000);
 
-      upstreamPromise.then((envelope) => {
-        try {
-          controller.enqueue(
-            encoder.encode(
-              JSON.stringify({ type: "result", ...envelope }) + "\n"
-            )
+      let release: (() => void) | null = null;
+      try {
+        const ahead = gatewayLock.waiting + (gatewayLock.pending > 0 ? 1 : 0);
+        // ahead = the count of jobs that will finish before mine. If the
+        // lock isn't held, that's 0 (we acquire immediately).
+        if (ahead > 0) {
+          emit({ type: "queued", ahead });
+          console.log(
+            `[transcribe] queued behind ${ahead} request(s); waiting for slot`
           );
-        } catch {
-          /* ignore */
         }
+
+        release = await gatewayLock.acquire();
+        const waitedMs = Date.now() - t0;
+        if (ahead > 0) {
+          console.log(
+            `[transcribe] acquired gateway slot after ${waitedMs}ms in queue`
+          );
+        }
+        console.log(`[transcribe] forwarding to ${GATEWAY}/v1/audio/transcriptions`);
+
+        const upstream = await fetch(
+          `${GATEWAY}/v1/audio/transcriptions`,
+          {
+            method: "POST",
+            headers: upstreamHeaders,
+            body: reqBody,
+            // Required by the fetch spec when body is a ReadableStream.
+            // @ts-expect-error — duplex is not yet in the lib.dom typings.
+            duplex: "half",
+          }
+        );
+        const body = await upstream.text();
+        console.log(
+          `[transcribe] upstream status=${upstream.status} bytes=${body.length} after ${Date.now() - t0}ms (waited ${waitedMs}ms in queue)`
+        );
+        emit({ type: "result", status: upstream.status, body });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[transcribe] upstream error:", msg);
+        emit({
+          type: "result",
+          status: 502,
+          body: JSON.stringify({ error: msg }),
+        });
+      } finally {
         clearInterval(heartbeat);
+        if (release) release();
         try {
           controller.close();
         } catch {
           /* already closed */
         }
-      });
+      }
     },
   });
 
