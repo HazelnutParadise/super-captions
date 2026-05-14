@@ -1,11 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createReadStream, createWriteStream } from "node:fs";
-import { unlink, stat } from "node:fs/promises";
+import { unlink, stat, readdir } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+
+const TMP_PREFIX = "transcribe-";
+const TMP_SUFFIX = ".bin";
+
+/**
+ * On module load, sweep any tmp files left behind by a previous BFF crash.
+ * Normal request paths clean up after themselves via the abort listener +
+ * finally + cancel, but a hard crash (OOM, SIGKILL) gives the JS runtime
+ * no chance to unlink — without this sweep the host's /tmp grows unbounded
+ * across container restarts.
+ */
+let _sweepStarted = false;
+function sweepStaleTmpFiles() {
+  if (_sweepStarted) return;
+  _sweepStarted = true;
+  void (async () => {
+    try {
+      const dir = tmpdir();
+      const names = await readdir(dir);
+      const now = Date.now();
+      let cleaned = 0;
+      for (const name of names) {
+        if (!name.startsWith(TMP_PREFIX) || !name.endsWith(TMP_SUFFIX)) continue;
+        const path = join(dir, name);
+        try {
+          const s = await stat(path);
+          // Anything older than 1 h is from a previous run (or a stuck
+          // request that's already failed every retry).
+          if (now - s.mtimeMs > 60 * 60 * 1000) {
+            await unlink(path);
+            cleaned++;
+          }
+        } catch {
+          /* file vanished concurrently */
+        }
+      }
+      if (cleaned > 0) {
+        console.log(`[transcribe] startup sweep removed ${cleaned} stale tmp file(s)`);
+      }
+    } catch (e) {
+      console.warn("[transcribe] startup sweep failed:", e);
+    }
+  })();
+}
+sweepStaleTmpFiles();
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -159,7 +204,7 @@ export async function POST(req: NextRequest) {
 
   // Set up the tmp-file cleanup hook BEFORE we register the abort
   // listener — the listener references it.
-  const tmpPath = join(tmpdir(), `transcribe-${randomUUID()}.bin`);
+  const tmpPath = join(tmpdir(), `${TMP_PREFIX}${randomUUID()}${TMP_SUFFIX}`);
   let tmpCleanedUp = false;
   const cleanupTmp = async () => {
     if (tmpCleanedUp) return;
