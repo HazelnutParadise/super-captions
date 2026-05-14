@@ -9,8 +9,8 @@ const GATEWAY =
 
 /** Hard cap on how many requests can sit waiting for the gateway slot
  *  before we start rejecting upfront with 503. Keeps memory bounded so an
- *  abusive client can't queue 1000 multi-GB uploads at once. */
-const MAX_QUEUE_DEPTH = 8;
+ *  abusive client can't queue thousands of multi-GB uploads at once. */
+const MAX_QUEUE_DEPTH = 50;
 
 /**
  * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway with two
