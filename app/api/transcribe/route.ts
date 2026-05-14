@@ -1,4 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createReadStream, createWriteStream } from "node:fs";
+import { unlink, stat } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,12 +15,12 @@ const GATEWAY =
   process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5000";
 
 /** Hard cap on how many requests can sit waiting for the gateway slot
- *  before we start rejecting upfront with 503. Keeps memory bounded so an
- *  abusive client can't queue thousands of multi-GB uploads at once. */
+ *  before we start rejecting upfront with 503. Each queued request keeps a
+ *  tmp file on disk, so this bounds disk usage rather than memory. */
 const MAX_QUEUE_DEPTH = 50;
 
 /**
- * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway with two
+ * Streaming proxy from the browser to 榛果繽紛樂's Speech Gateway with three
  * cross-cutting concerns layered on top of a plain fetch passthrough:
  *
  *   1. Concurrency limit — the gateway runs Whisper end-to-end on one
@@ -25,14 +32,16 @@ const MAX_QUEUE_DEPTH = 50;
  *   2. Cloudflare 524 avoidance — Whisper takes minutes on long inputs
  *      and CF cuts idle connections at 100 s. We respond with 200 + an
  *      NDJSON stream immediately and emit `{"type":"ping",...}` every
- *      20 s while waiting (both in queue and during upstream processing).
+ *      5 s while waiting (both in queue and during upstream processing).
  *      The final line `{"type":"result",status,body}` carries the gateway
  *      response. CF never sees the connection go idle.
  *
- * We also never call req.formData() — that buffers the entire upload
- * (potentially hundreds of MB for multi-hour videos) into memory. Once
- * we get our slot, the request body is piped straight into the upstream
- * fetch with its original multipart boundary intact.
+ *   3. Cloudflare 502-while-queued avoidance — if we hold the request body
+ *      undrained during queue wait, CF eventually gives up on the stalled
+ *      upload and 502s the client. So we drain the incoming multipart
+ *      stream to a tmp file on disk FIRST (lets the client→CF→origin
+ *      upload complete fast), THEN take our place in the queue. When the
+ *      slot is ours we stream the tmp file back out to upstream.
  */
 
 // ---- in-process mutex --------------------------------------------------
@@ -148,7 +157,19 @@ export async function POST(req: NextRequest) {
   };
   if (contentLength) upstreamHeaders["content-length"] = contentLength;
 
-  const reqBody = req.body;
+  // Set up the tmp-file cleanup hook BEFORE we register the abort
+  // listener — the listener references it.
+  const tmpPath = join(tmpdir(), `transcribe-${randomUUID()}.bin`);
+  let tmpCleanedUp = false;
+  const cleanupTmp = async () => {
+    if (tmpCleanedUp) return;
+    tmpCleanedUp = true;
+    try {
+      await unlink(tmpPath);
+    } catch {
+      /* already gone */
+    }
+  };
 
   // Abort plumbing: when the browser drops the NDJSON connection (closed
   // tab, dev-server reload, user retry), kill any in-flight upstream fetch
@@ -160,7 +181,45 @@ export async function POST(req: NextRequest) {
   req.signal.addEventListener("abort", () => {
     clientDisconnected = true;
     upstreamAbort.abort();
+    void cleanupTmp();
   });
+
+  // Drain the multipart upload to a tmp file BEFORE entering the queue.
+  // If we left req.body undrained while waiting for a slot, the client
+  // upload TCP socket would stall (no backpressure consumer at the BFF),
+  // and Cloudflare 502s the request after ~90s of stalled upload. With
+  // the file on disk the client's upload completes quickly; the disk
+  // copy waits for the gateway slot at our leisure.
+  try {
+    const bufferStart = Date.now();
+    await pipeline(
+      // Readable.fromWeb's typings are stricter than the runtime — both
+      // Node fetch and Bun fetch accept this conversion at runtime.
+      Readable.fromWeb(req.body as never),
+      createWriteStream(tmpPath)
+    );
+    let bufferedBytes: number | null = null;
+    try {
+      bufferedBytes = (await stat(tmpPath)).size;
+    } catch {
+      /* size best-effort */
+    }
+    console.log(
+      `[transcribe] body buffered to disk (${bufferedBytes ?? "?"} bytes) in ${Date.now() - bufferStart}ms`
+    );
+  } catch (e) {
+    await cleanupTmp();
+    if (clientDisconnected) {
+      console.log("[transcribe] client disconnected during upload buffering");
+      return new NextResponse(null, { status: 499 });
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[transcribe] failed to buffer upload to disk:", msg);
+    return NextResponse.json(
+      { error: "Upload buffering failed", detail: msg },
+      { status: 400 }
+    );
+  }
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -243,7 +302,12 @@ export async function POST(req: NextRequest) {
           {
             method: "POST",
             headers: upstreamHeaders,
-            body: reqBody,
+            // Stream from the buffered tmp file (filled while we were
+            // waiting in the queue). Each acquire creates a fresh
+            // ReadableStream-wrapped fs.ReadStream — fetch will drain it.
+            body: Readable.toWeb(
+              createReadStream(tmpPath)
+            ) as ReadableStream<Uint8Array>,
             signal: upstreamAbort.signal,
             // Required by the fetch spec when body is a ReadableStream.
             // @ts-expect-error — duplex is not yet in the lib.dom typings.
@@ -272,12 +336,20 @@ export async function POST(req: NextRequest) {
       } finally {
         clearInterval(heartbeat);
         if (release) release();
+        // Always remove the buffered upload, success or fail.
+        await cleanupTmp();
         try {
           controller.close();
         } catch {
           /* already closed */
         }
       }
+    },
+    cancel() {
+      // Browser dropped the response stream — make sure the tmp file
+      // doesn't linger. The finally block above also runs, this is just
+      // a belt for cancellation between start() and first read.
+      void cleanupTmp();
     },
   });
 
