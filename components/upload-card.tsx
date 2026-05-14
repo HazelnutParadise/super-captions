@@ -31,6 +31,7 @@ type Stage =
   | "loading-ffmpeg"
   | "extracting"
   | "queued"
+  | "retrying"
   | "transcribing"
   | "done";
 
@@ -39,6 +40,7 @@ const STAGE_LABEL: Record<Stage, string> = {
   "loading-ffmpeg": "載入 FFmpeg.wasm…",
   extracting: "在瀏覽器內分離音訊…",
   queued: "排隊中…",
+  retrying: "連線中斷，自動重試…",
   transcribing: "送至 Whisper Gateway 轉文字…",
   done: "完成 ✓",
 };
@@ -50,6 +52,9 @@ export function UploadCard() {
   const [stage, setStage] = useState<Stage>("idle");
   const [progress, setProgress] = useState(0);
   const [queueAhead, setQueueAhead] = useState(0);
+  const [retry, setRetry] = useState<{ attempt: number; max: number } | null>(
+    null
+  );
   const [hovered, setHovered] = useState(false);
   const [file, setFile] = useState<File | null>(null);
 
@@ -160,7 +165,12 @@ export function UploadCard() {
         },
         onProcessing: () => {
           setQueueAhead(0);
+          setRetry(null);
           setStage("transcribing");
+        },
+        onRetry: ({ attempt, maxAttempts }) => {
+          setRetry({ attempt, max: maxAttempts });
+          setStage("retrying");
         },
       });
 
@@ -204,6 +214,7 @@ export function UploadCard() {
       setStage("idle");
       setProgress(0);
       setQueueAhead(0);
+      setRetry(null);
     }
   };
 
@@ -274,13 +285,20 @@ export function UploadCard() {
           <div className="space-y-2 rounded-lg border border-border/60 bg-background/60 p-4">
             <div className="flex items-center justify-between text-sm">
               <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin text-fuchsia-400" />
+                <Loader2
+                  className={cn(
+                    "h-4 w-4 animate-spin",
+                    stage === "retrying" ? "text-amber-400" : "text-fuchsia-400"
+                  )}
+                />
                 <span>
                   {stage === "queued"
                     ? queueAhead > 0
                       ? `排隊中 — 前面還有 ${queueAhead} 個`
                       : "排隊中…"
-                    : STAGE_LABEL[stage]}
+                    : stage === "retrying" && retry
+                      ? `連線中斷，自動重試（第 ${retry.attempt} / ${retry.max} 次）`
+                      : STAGE_LABEL[stage]}
                 </span>
               </div>
               <span className="text-xs text-muted-foreground">
@@ -288,12 +306,14 @@ export function UploadCard() {
                   ? "等待 Gateway 空檔"
                   : stage === "transcribing"
                     ? "上傳音訊到 Gateway"
-                    : `${Math.round(progress)}%`}
+                    : stage === "retrying"
+                      ? "稍候片刻…"
+                      : `${Math.round(progress)}%`}
               </span>
             </div>
             <Progress
               value={
-                stage === "queued"
+                stage === "queued" || stage === "retrying"
                   ? 100
                   : stage === "transcribing"
                     ? 100

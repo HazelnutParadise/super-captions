@@ -62,11 +62,66 @@ export interface TranscribeOptions {
   onQueueStatus?: (status: { ahead: number }) => void;
   /** Fired exactly once when the proxy acquires the gateway slot. */
   onProcessing?: () => void;
+  /**
+   * Fired when a transient transport failure trips an auto-retry. `attempt`
+   * is the 1-indexed retry that's about to start; `maxAttempts` is the cap.
+   */
+  onRetry?: (info: { attempt: number; maxAttempts: number; reason: string }) => void;
 }
+
+/** Thrown when the NDJSON stream closes before a `result` line arrives AND
+ *  the proxy hadn't yet acquired the gateway slot. Safe to retry because no
+ *  work has reached the gateway. */
+class StreamDroppedBeforeResultError extends Error {
+  constructor(public readonly buffer: string) {
+    super(
+      buffer
+        ? `Connection lost while queued (last buffered bytes: ${buffer.slice(-200)})`
+        : "Connection lost while queued"
+    );
+    this.name = "StreamDroppedBeforeResultError";
+  }
+}
+
+const MAX_ATTEMPTS = 3;
 
 export async function transcribeAudio(
   audioFile: File,
   options: TranscribeOptions = {}
+): Promise<{
+  segments: CaptionSegment[];
+  raw: AdvancedResponse | SimpleResponse;
+  speakerLabels: string[];
+}> {
+  // Retry only the queue-before-processing window. Once the gateway has
+  // started transcribing, a retry would double-bill the slot.
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await runTranscriptionAttempt(audioFile, options);
+    } catch (e) {
+      if (
+        e instanceof StreamDroppedBeforeResultError &&
+        attempt < MAX_ATTEMPTS
+      ) {
+        const backoffMs = 800 * Math.pow(2, attempt - 1); // 0.8s, 1.6s, 3.2s
+        options.onRetry?.({
+          attempt: attempt + 1,
+          maxAttempts: MAX_ATTEMPTS,
+          reason: e.message,
+        });
+        await new Promise((r) => setTimeout(r, backoffMs));
+        continue;
+      }
+      throw e;
+    }
+  }
+  // Unreachable in practice: the loop either returns or throws.
+  throw new Error("Transcription failed after exhausting retries");
+}
+
+async function runTranscriptionAttempt(
+  audioFile: File,
+  options: TranscribeOptions
 ): Promise<{
   segments: CaptionSegment[];
   raw: AdvancedResponse | SimpleResponse;
@@ -106,6 +161,10 @@ export async function transcribeAudio(
   const decoder = new TextDecoder();
   let buffer = "";
   let envelope: { type: "result"; status: number; body: string } | null = null;
+  // Tracks whether we ever saw "processing"; if we did and the stream then
+  // drops we MUST NOT retry (the gateway is mid-job and a retry would
+  // duplicate the work).
+  let processingSeen = false;
 
   outer: while (true) {
     const { value, done } = await reader.read();
@@ -126,6 +185,7 @@ export async function transcribeAudio(
           options.onQueueStatus?.({ ahead: msg.ahead ?? 0 });
           break;
         case "processing":
+          processingSeen = true;
           options.onProcessing?.();
           break;
         case "result":
@@ -142,8 +202,15 @@ export async function transcribeAudio(
   }
 
   if (!envelope) {
+    if (!processingSeen) {
+      // Retriable — the proxy never told us the gateway slot was ours, so
+      // nothing has reached the ASR backend yet. Safe to redo the whole
+      // upload from scratch.
+      throw new StreamDroppedBeforeResultError(buffer);
+    }
     throw new Error(
-      `Transcription failed: stream ended without result envelope (tail=${buffer.slice(-200)})`
+      "與後端的連線在轉錄途中斷掉了，請稍後再試一次。" +
+        (buffer ? ` (tail=${buffer.slice(-200)})` : "")
     );
   }
   if (envelope.status < 200 || envelope.status >= 300) {

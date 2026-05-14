@@ -114,10 +114,23 @@ export async function POST(req: NextRequest) {
 
   const reqBody = req.body;
 
+  // Abort plumbing: when the browser drops the NDJSON connection (closed
+  // tab, dev-server reload, user retry), kill any in-flight upstream fetch
+  // and release the mutex slot eagerly. Otherwise a disconnected client
+  // would keep the gateway tied up running a transcription nobody's
+  // waiting for, blocking everyone behind in the queue.
+  const upstreamAbort = new AbortController();
+  let clientDisconnected = false;
+  req.signal.addEventListener("abort", () => {
+    clientDisconnected = true;
+    upstreamAbort.abort();
+  });
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
       const emit = (obj: Record<string, unknown>) => {
+        if (clientDisconnected) return;
         try {
           controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
         } catch {
@@ -138,6 +151,7 @@ export async function POST(req: NextRequest) {
       };
 
       const heartbeat = setInterval(() => {
+        if (clientDisconnected) return;
         if (acquired) {
           emit({ type: "ping", t: Date.now() - t0 });
         } else {
@@ -154,7 +168,30 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        release = await gatewayLock.acquire();
+        // Race the mutex acquire against the client abort so a queued
+        // client that disconnects releases its "intent to acquire" without
+        // ever taking the slot.
+        release = await Promise.race([
+          gatewayLock.acquire(),
+          new Promise<() => void>((_, reject) => {
+            if (clientDisconnected) {
+              reject(new Error("client disconnected before slot acquired"));
+              return;
+            }
+            req.signal.addEventListener("abort", () =>
+              reject(new Error("client disconnected before slot acquired"))
+            );
+          }),
+        ]);
+
+        if (clientDisconnected) {
+          // Slot was acquired but the client already left. Release and bail.
+          release();
+          release = null;
+          console.log("[transcribe] client gone before processing; released slot");
+          return;
+        }
+
         acquired = true;
         const waitedMs = Date.now() - t0;
         emit({ type: "processing", t: waitedMs });
@@ -171,6 +208,7 @@ export async function POST(req: NextRequest) {
             method: "POST",
             headers: upstreamHeaders,
             body: reqBody,
+            signal: upstreamAbort.signal,
             // Required by the fetch spec when body is a ReadableStream.
             // @ts-expect-error — duplex is not yet in the lib.dom typings.
             duplex: "half",
@@ -183,12 +221,18 @@ export async function POST(req: NextRequest) {
         emit({ type: "result", status: upstream.status, body });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error("[transcribe] upstream error:", msg);
-        emit({
-          type: "result",
-          status: 502,
-          body: JSON.stringify({ error: msg }),
-        });
+        if (clientDisconnected) {
+          console.log(
+            `[transcribe] aborted after client disconnect: ${msg}`
+          );
+        } else {
+          console.error("[transcribe] upstream error:", msg);
+          emit({
+            type: "result",
+            status: 502,
+            body: JSON.stringify({ error: msg }),
+          });
+        }
       } finally {
         clearInterval(heartbeat);
         if (release) release();
