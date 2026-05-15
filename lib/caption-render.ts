@@ -13,8 +13,12 @@ export function drawCaption(
 ) {
   if (!text.trim()) return;
 
-  // Scale font size relative to a 720p reference so 1080p videos look right.
-  const scale = height / 720;
+  // Scale off the *short* side (≈720p reference), not height — otherwise a
+  // tall portrait clip inflates captions to landscape-height proportions.
+  // Portrait gets an extra trim since its narrow width makes equally-scaled
+  // text feel oversized.
+  const isPortrait = height > width;
+  const scale = (Math.min(width, height) / 720) * (isPortrait ? 0.82 : 1);
   const fontSize = Math.round(style.fontSize * scale);
   const paddingX = Math.round(style.paddingX * scale);
   const paddingY = Math.round(style.paddingY * scale);
@@ -33,7 +37,21 @@ export function drawCaption(
     lines.length * lineHeight + paddingY * 2 - (lineHeight - fontSize);
 
   const baseX = width / 2;
-  const baseY = Math.round(height * 0.9 - totalHeight / 2);
+  let baseY = Math.round(height * 0.9 - totalHeight / 2);
+
+  // Keep the whole block (background pills + text) inside the frame: push it
+  // up if it spills past the bottom safe area, then pin to the top if a very
+  // tall block still won't fit (so the start of the caption stays on-screen).
+  const safeTop = Math.round(height * 0.03);
+  const safeBottom = Math.round(height * 0.05);
+  const blockBottom = baseY + lines.length * lineHeight - fontSize;
+  if (blockBottom > height - safeBottom) {
+    baseY -= blockBottom - (height - safeBottom);
+  }
+  const blockTop = baseY - fontSize - paddingY / 2;
+  if (blockTop < safeTop) {
+    baseY += safeTop - blockTop;
+  }
 
   // Draw background pill per-line so it hugs the text shape.
   ctx.save();
