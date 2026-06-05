@@ -15,8 +15,24 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-Hant" className="dark">
-      <body className="min-h-screen bg-background text-foreground antialiased">
+    // suppressHydrationWarning on <html> and <body>: the Pistachio CF
+    // Worker (HazelnutParadise/Pistachio-Global-Announcement-System) sets
+    // style/class on both elements via DOMContentLoaded, before React
+    // hydrates. Without the suppression React sees the attribute diff and
+    // falls back to a full client re-render (flash-and-disappear #418).
+    <html lang="zh-Hant" className="dark" suppressHydrationWarning>
+      <body className="min-h-screen bg-background text-foreground antialiased" suppressHydrationWarning>
+        {/* Pistachio anchor — the Worker looks for this id and injects the
+         *  banner inside it. dangerouslySetInnerHTML makes the inner node
+         *  opaque to React's reconciler so the Worker's DOM mutations
+         *  don't cause hydration issues. */}
+        <div
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{
+            __html: '<div id="Pistachio-Announcement"></div>',
+          }}
+        />
+
         <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
           <div
             className="blur-orb h-[40rem] w-[40rem]"
