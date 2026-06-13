@@ -163,7 +163,7 @@ async function runTranscriptionAttempt(
   const r = await fetch(url, { method: "POST", body: form });
   if (!r.ok) {
     const text = await r.text();
-    throw new Error(`Transcription failed: ${r.status} ${text}`);
+    throw new Error(`與後端通訊失敗（${r.status}），請稍後再試。`);
   }
   if (!r.body) {
     throw new Error("Transcription failed: empty response body");
@@ -247,8 +247,18 @@ async function runTranscriptionAttempt(
     );
   }
   if (envelope.status < 200 || envelope.status >= 300) {
+    let detail = "";
+    try {
+      const err = JSON.parse(envelope.body);
+      detail = err.error ?? err.message ?? envelope.body;
+    } catch {
+      detail = envelope.body.slice(0, 200);
+    }
+    const isConnError = detail.includes("fetch failed") || detail.includes("ECONNREFUSED");
     throw new Error(
-      `Transcription failed: ${envelope.status} ${envelope.body.slice(0, 500)}`
+      isConnError
+        ? "無法連線至語音辨識伺服器，請確認 Whisper Gateway 是否正在運行。"
+        : `語音辨識失敗（${envelope.status}）：${detail}`
     );
   }
 

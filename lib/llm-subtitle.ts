@@ -71,7 +71,10 @@ const SYSTEM_PROMPT = `你是一個專業的字幕編輯助手。請將輸入的
 /**
  * 呼叫 Ollama，若有失敗則進行重試，持續失敗則拋出明確錯誤
  */
-async function callOllamaWithRetry(inputData: any, retries = 2): Promise<any> {
+const MAX_LLM_RETRIES = 5;
+const BACKOFF_BASE_MS = 1500;
+
+async function callOllamaWithRetry(inputData: any): Promise<any> {
   let release: (() => void) | null = null;
   try {
     release = await ollamaLock.acquire();
@@ -92,7 +95,7 @@ async function callOllamaWithRetry(inputData: any, retries = 2): Promise<any> {
       ],
     };
 
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    for (let attempt = 1; attempt <= MAX_LLM_RETRIES; attempt++) {
       try {
         const response = await fetch(`${OLLAMA}/api/chat`, {
           method: "POST",
@@ -113,10 +116,13 @@ async function callOllamaWithRetry(inputData: any, retries = 2): Promise<any> {
         }
         return parsed;
       } catch (err) {
-        if (attempt === retries) {
-          throw new Error(`連線至 Ollama 失敗或回傳格式損壞 (Model: ${MODEL}): ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt === MAX_LLM_RETRIES) {
+          throw new Error(`Ollama 連續 ${MAX_LLM_RETRIES} 次失敗 (Model: ${MODEL}): ${msg}`);
         }
-        console.warn(`[LLM Subtitle] Ollama call failed, retrying... (attempt ${attempt + 1}/${retries})`);
+        const delay = BACKOFF_BASE_MS * attempt;
+        console.warn(`[LLM Subtitle] attempt ${attempt}/${MAX_LLM_RETRIES} failed: ${msg} — retrying in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   } finally {
@@ -159,11 +165,7 @@ export async function correctAndResegmentWithLLM(
       })),
     };
 
-    // 任何 Ollama 呼叫失敗，將直接向外拋出明確錯誤，絕不默默降級
     const responseJson = await callOllamaWithRetry(llmInput);
-
-    console.log(`[LLM-debug] batch ${batchIdx} input:`, JSON.stringify(llmInput.segments.map(s => ({ id: s.id, text: s.text }))));
-    console.log(`[LLM-debug] batch ${batchIdx} output:`, JSON.stringify(responseJson?.results));
 
     for (const originalSeg of batch) {
       const origId = String(originalSeg.id);

@@ -315,7 +315,7 @@ export async function POST(req: NextRequest) {
             }
           } catch (e) {
             console.error("[transcribe] LLM correction failed:", e);
-            throw new Error(`LLM 修正與分段失敗：${e instanceof Error ? e.message : String(e)}`);
+            throw new Error(`AI 校正失敗：${e instanceof Error ? e.message : String(e)}`);
           }
         }
 

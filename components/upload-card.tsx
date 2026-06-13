@@ -306,15 +306,12 @@ export function UploadCard() {
               htmlFor="use-llm"
               className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground"
             >
-              <Sparkles className="h-3.5 w-3.5 text-fuchsia-300" /> 字幕精準度
+              <Sparkles className="h-3.5 w-3.5 text-fuchsia-300" /> AI 智慧校正
             </Label>
-            <div className="text-sm">
-              {useLLM ? "精準（LLM 修錯字與斷句）" : "差強人意（快速）"}
-            </div>
             <div className="text-[11px] text-muted-foreground">
               {useLLM
-                ? "啟用後處理時間較長，但會修正同音錯字並重新斷句。"
-                : "關閉時跳過 LLM，僅以標點機械式斷句，速度最快。"}
+                ? "自動修正同音錯字、優化斷句，處理時間較長。"
+                : "僅依標點快速斷句，速度最快。"}
             </div>
           </div>
           <Switch
