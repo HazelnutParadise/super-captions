@@ -61,7 +61,10 @@ export function drawCaption(
     const x = baseX - lineWidth / 2 - paddingX;
     const y = baseY + i * lineHeight - fontSize - paddingY / 2;
     const w = lineWidth + paddingX * 2;
-    const h = lineHeight + paddingY * 0.5;
+    // Hug the text vertically (fontSize + paddingY) instead of the full
+    // lineHeight — otherwise adjacent rows' pills overlap by paddingY/2.
+    // Cap at lineHeight as a safety net if padding is configured huge.
+    const h = Math.min(lineHeight, fontSize + paddingY);
     roundRect(ctx, x, y, w, h, radius);
     ctx.fill();
   }

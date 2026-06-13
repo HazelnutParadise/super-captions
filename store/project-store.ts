@@ -13,6 +13,7 @@ interface ProjectState {
   speakers: SpeakerStyle[];
   activeSegmentId: string | null;
   language: string;
+  useLLM: boolean;
 
   setVideo: (file: File | null, url: string | null) => void;
   setVideoMeta: (duration: number, width: number, height: number) => void;
@@ -23,6 +24,7 @@ interface ProjectState {
   setActiveSegment: (id: string | null) => void;
 
   setLanguage: (language: string) => void;
+  setUseLLM: (useLLM: boolean) => void;
   /**
    * Replace the speaker list, used after a transcription discovers a new
    * set of speakers. Pass an array of {id, name} hints; existing entries
@@ -52,6 +54,7 @@ export const useProject = create<ProjectState>((set, get) => ({
   speakers: defaultSpeakers(),
   activeSegmentId: null,
   language: "auto",
+  useLLM: false,
 
   setVideo: (file, url) =>
     set((s) => {
@@ -95,6 +98,7 @@ export const useProject = create<ProjectState>((set, get) => ({
   setActiveSegment: (id) => set({ activeSegmentId: id }),
 
   setLanguage: (language) => set({ language }),
+  setUseLLM: (useLLM) => set({ useLLM }),
 
   replaceSpeakers: (next) =>
     set((s) => {
@@ -136,5 +140,6 @@ export const useProject = create<ProjectState>((set, get) => ({
       speakers: defaultSpeakers(),
       activeSegmentId: null,
       language: "auto",
+      useLLM: false,
     }),
 }));

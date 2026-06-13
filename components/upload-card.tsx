@@ -9,11 +9,13 @@ import {
   Loader2,
   AudioLines,
   Languages,
+  Sparkles,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -33,6 +35,7 @@ type Stage =
   | "queued"
   | "retrying"
   | "transcribing"
+  | "correcting"
   | "done";
 
 const STAGE_LABEL: Record<Stage, string> = {
@@ -42,6 +45,7 @@ const STAGE_LABEL: Record<Stage, string> = {
   queued: "排隊中…",
   retrying: "連線中斷，自動重試…",
   transcribing: "送至 Whisper Gateway 轉文字…",
+  correcting: "LLM 正在修正錯字與分段…",
   done: "完成 ✓",
 };
 
@@ -64,6 +68,8 @@ export function UploadCard() {
   const replaceSpeakers = useProject((s) => s.replaceSpeakers);
   const language = useProject((s) => s.language);
   const setLanguage = useProject((s) => s.setLanguage);
+  const useLLM = useProject((s) => s.useLLM);
+  const setUseLLM = useProject((s) => s.setUseLLM);
 
   const probeVideoMeta = useCallback(
     (f: File) =>
@@ -127,6 +133,10 @@ export function UploadCard() {
       return;
     }
     try {
+      // Prefetch the editor page EARLY so the chunk is ready by the time
+      // processing finishes. In fast mode (no LLM) the whole pipeline
+      // completes in seconds — prefetching right before push is too late.
+      router.prefetch("/editor");
       setProgress(0);
       setStage("loading-ffmpeg");
       const meta = await probeVideoMeta(file);
@@ -159,6 +169,7 @@ export function UploadCard() {
         language: gatewayLang,
         diarize: true,
         convertTo,
+        useLLM,
         onQueueStatus: ({ ahead }) => {
           setQueueAhead(ahead);
           if (ahead > 0) setStage("queued");
@@ -167,6 +178,12 @@ export function UploadCard() {
           setQueueAhead(0);
           setRetry(null);
           setStage("transcribing");
+        },
+        onLLMCorrecting: (p) => {
+          setStage("correcting");
+          // First call (no payload) resets the bar; subsequent per-batch
+          // calls drive a real determinate percentage.
+          setProgress(p && p.total > 0 ? (p.done / p.total) * 100 : 0);
         },
         onRetry: ({ attempt, maxAttempts }) => {
           setRetry({ attempt, max: maxAttempts });
@@ -218,7 +235,7 @@ export function UploadCard() {
     }
   };
 
-  const busy = stage !== "idle" && stage !== "done";
+  const busy = stage !== "idle";
 
   return (
     <Card className="border-border/60 bg-card/60 p-8 backdrop-blur-xl">
@@ -226,13 +243,15 @@ export function UploadCard() {
         <div
           onDragOver={(e) => {
             e.preventDefault();
-            setHovered(true);
+            if (!busy) setHovered(true);
           }}
           onDragLeave={() => setHovered(false)}
-          onDrop={onDrop}
-          onClick={onPickClick}
+          onDrop={busy ? (e) => e.preventDefault() : onDrop}
+          onClick={busy ? undefined : onPickClick}
+          aria-disabled={busy}
           className={cn(
-            "group relative flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-border/60 bg-background/40 px-6 py-12 text-center transition-all",
+            "group relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border/60 bg-background/40 px-6 py-12 text-center transition-all",
+            busy ? "cursor-not-allowed opacity-60" : "cursor-pointer",
             hovered &&
               "border-fuchsia-400/80 bg-fuchsia-500/5 shadow-inner shadow-fuchsia-500/10",
             file && "border-border bg-background/60"
@@ -262,7 +281,7 @@ export function UploadCard() {
           <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
             <Languages className="h-3.5 w-3.5" /> 字幕語言
           </Label>
-          <Select value={language} onValueChange={setLanguage}>
+          <Select value={language} onValueChange={setLanguage} disabled={busy}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -279,6 +298,31 @@ export function UploadCard() {
           <div className="pt-1 text-[11px] text-muted-foreground">
             講者分離已預設啟用 — 多人對話會自動建立不同樣式
           </div>
+        </div>
+
+        <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-background/40 p-3">
+          <div className="space-y-0.5">
+            <Label
+              htmlFor="use-llm"
+              className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-fuchsia-300" /> 字幕精準度
+            </Label>
+            <div className="text-sm">
+              {useLLM ? "精準（LLM 修錯字與斷句）" : "差強人意（快速）"}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {useLLM
+                ? "啟用後處理時間較長，但會修正同音錯字並重新斷句。"
+                : "關閉時跳過 LLM，僅以標點機械式斷句，速度最快。"}
+            </div>
+          </div>
+          <Switch
+            id="use-llm"
+            checked={useLLM}
+            onCheckedChange={setUseLLM}
+            disabled={busy}
+          />
         </div>
 
         {busy && (
@@ -313,11 +357,9 @@ export function UploadCard() {
             </div>
             <Progress
               value={
-                stage === "queued" || stage === "retrying"
+                stage === "queued" || stage === "retrying" || stage === "transcribing"
                   ? 100
-                  : stage === "transcribing"
-                    ? 100
-                    : progress
+                  : progress
               }
             />
           </div>

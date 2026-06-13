@@ -22,6 +22,56 @@ export default function RootLayout({
     // falls back to a full client re-render (flash-and-disappear #418).
     <html lang="zh-Hant" className="dark" suppressHydrationWarning>
       <body className="min-h-screen bg-background text-foreground antialiased" suppressHydrationWarning>
+        {/* ChunkLoadError auto-recovery — catches webpack chunk failures (common when fast mode navigates before chunks load) */}
+        <Script id="chunk-load-error-recovery" strategy="beforeInteractive">
+          {`
+            (function() {
+              function isChunkError(err) {
+                if (!err) return false;
+                const msg = err.message || err.reason || String(err);
+                return msg.includes('ChunkLoadError') ||
+                       msg.includes('Loading chunk') ||
+                       msg.includes('Loading CSS chunk') ||
+                       (err.name === 'ChunkLoadError');
+              }
+
+              // 1. Catch script/link tag load errors
+              window.addEventListener('error', function(e) {
+                const target = e.target;
+                if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK') &&
+                    target.src && target.src.includes('/_next/static/')) {
+                  if (isChunkError(e.error)) {
+                    window.location.reload();
+                  }
+                }
+              }, true);
+
+              // 2. Catch unhandled promise rejections (webpack chunk loading often rejects)
+              window.addEventListener('unhandledrejection', function(e) {
+                if (isChunkError(e.reason)) {
+                  e.preventDefault();
+                  window.location.reload();
+                }
+              });
+
+              // 3. Override webpack's chunk load error handler (Next.js 15)
+              const origWebpackRequire = window.__webpack_require__;
+              if (origWebpackRequire && origWebpackRequire.f && origWebpackRequire.f.j) {
+                const origJ = origWebpackRequire.f.j;
+                origWebpackRequire.f.j = function(chunkId, promises) {
+                  try {
+                    return origJ.apply(this, arguments);
+                  } catch (err) {
+                    if (isChunkError(err)) {
+                      window.location.reload();
+                    }
+                    throw err;
+                  }
+                };
+              }
+            })();
+          `}
+        </Script>
         {/* Pistachio anchor — the Worker looks for this id and injects the
          *  banner inside it. dangerouslySetInnerHTML makes the inner node
          *  opaque to React's reconciler so the Worker's DOM mutations

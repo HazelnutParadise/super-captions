@@ -6,7 +6,7 @@ import { resegment } from "./resegment";
  * Response shape from 榛果繽紛樂's whisper-api when `advanced=true`.
  * See whisper_service/schemas.py in HazelnutParadise/whisper-api.
  */
-interface AdvancedResponse {
+export interface AdvancedResponse {
   text?: string;
   language?: string;
   segments?: SegmentTimestamp[];
@@ -14,7 +14,7 @@ interface AdvancedResponse {
   speakers?: string[];
 }
 
-interface SegmentTimestamp {
+export interface SegmentTimestamp {
   id?: number;
   start?: number;
   end?: number;
@@ -23,7 +23,7 @@ interface SegmentTimestamp {
   words?: WordTimestamp[];
 }
 
-interface WordTimestamp {
+export interface WordTimestamp {
   word: string;
   start?: number;
   end?: number;
@@ -55,6 +55,12 @@ export interface TranscribeOptions {
    */
   convertTo?: ChineseScript;
   /**
+   * When true, the backend runs LLM-based typo correction & resegmentation
+   * (slower, more accurate). When false, only the basic mechanical
+   * resegment() runs client-side — fast but rougher output.
+   */
+  useLLM?: boolean;
+  /**
    * Fired whenever the proxy reports we're still in the gateway queue.
    * `ahead` is the number of jobs that will run before ours. When `ahead`
    * is 0 the gateway slot is ours and `onProcessing` will fire next.
@@ -62,6 +68,12 @@ export interface TranscribeOptions {
   onQueueStatus?: (status: { ahead: number }) => void;
   /** Fired exactly once when the proxy acquires the gateway slot. */
   onProcessing?: () => void;
+  /**
+   * Fired when LLM correction & re-segmentation runs on the backend. Called
+   * once with no payload when the phase starts, then once per completed batch
+   * with `{ done, total }` so the UI can render a determinate bar.
+   */
+  onLLMCorrecting?: (progress?: { done: number; total: number }) => void;
   /**
    * Fired when a transient transport failure trips an auto-retry. `attempt`
    * is the 1-indexed retry that's about to start; `maxAttempts` is the cap.
@@ -144,7 +156,11 @@ async function runTranscriptionAttempt(
   if (options.maxSpeakers)
     form.append("max_speakers", String(options.maxSpeakers));
 
-  const r = await fetch("/api/transcribe", { method: "POST", body: form });
+  // `use_llm` rides in the query string rather than the multipart form so
+  // the route can read it without buffering & re-encoding the whole body —
+  // the multipart stream is forwarded straight through to the gateway.
+  const url = `/api/transcribe${options.useLLM ? "?use_llm=true" : ""}`;
+  const r = await fetch(url, { method: "POST", body: form });
   if (!r.ok) {
     const text = await r.text();
     throw new Error(`Transcription failed: ${r.status} ${text}`);
@@ -177,7 +193,14 @@ async function runTranscriptionAttempt(
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
       if (!line) continue;
-      let msg: { type?: string; ahead?: number; status?: number; body?: string };
+      let msg: {
+        type?: string;
+        ahead?: number;
+        status?: number;
+        body?: string;
+        done?: number;
+        total?: number;
+      };
       try {
         msg = JSON.parse(line);
       } catch {
@@ -190,6 +213,13 @@ async function runTranscriptionAttempt(
         case "processing":
           processingSeen = true;
           options.onProcessing?.();
+          break;
+        case "correcting":
+          options.onLLMCorrecting?.(
+            typeof msg.total === "number" && msg.total > 0
+              ? { done: msg.done ?? 0, total: msg.total }
+              : undefined
+          );
           break;
         case "result":
           envelope = {
@@ -275,7 +305,9 @@ async function runTranscriptionAttempt(
   // Re-segment overly long captions. Whisper sometimes emits 60+ char single
   // segments for a fast monologue with no breath pauses; we slice them on
   // punctuation so each caption reads in one glance.
-  segments = resegment(segments);
+  if (!(data as any).llmProcessed) {
+    segments = resegment(segments);
+  }
 
   return { segments, raw: data, speakerLabels };
 }

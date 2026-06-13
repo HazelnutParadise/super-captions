@@ -6,6 +6,8 @@ import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { Mutex } from "@/lib/mutex";
+import { correctAndResegmentWithLLM } from "@/lib/llm-subtitle";
 
 const TMP_PREFIX = "transcribe-";
 const TMP_SUFFIX = ".bin";
@@ -91,80 +93,6 @@ const MAX_QUEUE_DEPTH = 50;
 
 // ---- in-process mutex --------------------------------------------------
 
-class Mutex {
-  private locked = false;
-  private waiters: Array<() => void> = [];
-  /** Monotonic counter of completed acquires. Combined with a per-handler
-   *  snapshot at enqueue time it lets us compute "how many jobs finished
-   *  since I joined" without having to track positions inside the waiters
-   *  array. */
-  private completedCount = 0;
-
-  /** Number waiting + the one currently running (if any). */
-  get pending(): number {
-    return this.waiters.length + (this.locked ? 1 : 0);
-  }
-  /** Number ahead of the next acquirer right now. */
-  get waiting(): number {
-    return this.waiters.length;
-  }
-  get completed(): number {
-    return this.completedCount;
-  }
-
-  async acquire(signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) {
-      throw signal.reason ?? new Error("aborted before acquire");
-    }
-    if (this.locked) {
-      let myResolver!: () => void;
-      try {
-        await new Promise<void>((resolve, reject) => {
-          myResolver = resolve;
-          this.waiters.push(resolve);
-          if (signal) {
-            const onAbort = () => {
-              // Pull ourselves out of waiters[] so a later release()
-              // doesn't hand the lock to a dead client and deadlock the
-              // queue.
-              const idx = this.waiters.indexOf(myResolver);
-              if (idx !== -1) this.waiters.splice(idx, 1);
-              reject(signal.reason ?? new Error("aborted while queued"));
-            };
-            signal.addEventListener("abort", onAbort, { once: true });
-          }
-        });
-      } catch (e) {
-        // If we lost the race between abort and resolve (resolver got
-        // shifted off and called just as abort fired), waiters[] no longer
-        // has us but the promise already resolved — meaning the lock IS
-        // ours. Release it immediately so the next waiter can take it.
-        if (this.waiters.indexOf(myResolver) === -1) {
-          // Resolver was consumed → we got the slot. Need to "decline" it.
-          // Acquire path will set locked below; instead, mark locked then
-          // immediately release so completedCount stays sane.
-          this.locked = true;
-          this.completedCount++;
-          this.locked = false;
-          const next = this.waiters.shift();
-          if (next) next();
-        }
-        throw e;
-      }
-    }
-    this.locked = true;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.completedCount++;
-      this.locked = false;
-      const next = this.waiters.shift();
-      if (next) next();
-    };
-  }
-}
-
 const gatewayLock = new Mutex();
 
 // ---- handler -----------------------------------------------------------
@@ -174,8 +102,11 @@ export async function POST(req: NextRequest) {
   const contentType = req.headers.get("content-type") ?? "";
   const contentLength = req.headers.get("content-length");
   const pendingBefore = gatewayLock.pending;
+  // Per-request toggle for LLM correction. Read from query string so we
+  // don't have to parse & re-encode the multipart body just to find one flag.
+  const useLLM = req.nextUrl.searchParams.get("use_llm") === "true";
   console.log(
-    `[transcribe] POST received ct=${contentType} cl=${contentLength ?? "n/a"} hasBody=${!!req.body} queue=${pendingBefore}`
+    `[transcribe] POST received ct=${contentType} cl=${contentLength ?? "n/a"} hasBody=${!!req.body} queue=${pendingBefore} useLLM=${useLLM}`
   );
 
   if (!contentType.startsWith("multipart/form-data")) {
@@ -363,7 +294,32 @@ export async function POST(req: NextRequest) {
         console.log(
           `[transcribe] upstream status=${upstream.status} bytes=${body.length} after ${Date.now() - t0}ms (waited ${waitedMs}ms in queue)`
         );
-        emit({ type: "result", status: upstream.status, body });
+
+        let finalBody = body;
+        if (upstream.status === 200 && useLLM) {
+          try {
+            const data = JSON.parse(body);
+            if (Array.isArray(data.segments) && data.segments.length > 0) {
+              emit({ type: "correcting", t: Date.now() - t0, done: 0, total: 0 });
+              console.log("[transcribe] Starting LLM correcting and resegmenting...");
+              const corrected = await correctAndResegmentWithLLM(
+                data.segments,
+                (done, total) => {
+                  emit({ type: "correcting", t: Date.now() - t0, done, total });
+                }
+              );
+              data.segments = corrected;
+              data.llmProcessed = true;
+              finalBody = JSON.stringify(data);
+              console.log("[transcribe] LLM correcting and resegmenting completed.");
+            }
+          } catch (e) {
+            console.error("[transcribe] LLM correction failed:", e);
+            throw new Error(`LLM 修正與分段失敗：${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        emit({ type: "result", status: upstream.status, body: finalBody });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (clientDisconnected) {

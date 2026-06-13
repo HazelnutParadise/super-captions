@@ -72,7 +72,7 @@ function splitOne(
   return out;
 }
 
-function splitText(text: string, maxChars: number, minChars: number): string[] {
+export function splitText(text: string, maxChars: number, minChars: number): string[] {
   let pieces = [text];
 
   // Try progressively weaker boundaries. Each pass only re-splits pieces
