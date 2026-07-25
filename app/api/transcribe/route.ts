@@ -56,7 +56,6 @@ sweepStaleTmpFiles();
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 600;
 
 const GATEWAY =
   process.env.WHISPER_GATEWAY_URL ?? "http://whisper-gateway:5000";
