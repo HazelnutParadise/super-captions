@@ -18,6 +18,8 @@ npm install
 npm run dev
 ```
 
+If the workspace is on a network share that cannot sync Turbopack cache files, set `NEXT_TURBOPACK_FS_CACHE=0` in `.env.local`. This disables persistent compilation caching for both development and builds. Local disks keep the default cache behavior.
+
 Set `WHISPER_GATEWAY_URL` to a reachable gateway — from the host the gateway is on port `5148`, see `.env.example`.
 
 Tests run on Bun — `npm test` executes `bun test`. `npm run lint` runs ESLint, and `npm run typecheck` runs the TypeScript 7 compiler. The `typescript` package aliases the official TypeScript 6 compatibility package for Next.js and ESLint APIs; `@typescript/native` supplies the latest TypeScript 7 CLI. ESLint compatibility utilities adapt the current React plugins to ESLint 10. Tailwind 4 loads the existing theme through `@config`.
