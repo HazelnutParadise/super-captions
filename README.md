@@ -82,7 +82,19 @@ docker compose up -d --build
 
 The Dockerfile uses Bun for install, build, and runtime (`bun run server.js` on Next.js standalone output). The lockfile is `bun.lock`; `package-lock.json` is kept for local `npm` workflows.
 
-The runner stage also installs `python3`, `py3-pip` and `ffmpeg`, builds a `/opt/youtube` virtualenv from `requirements-youtube.txt`, and points `YT_DLP_PATH` at it — so a built image needs no further setup for YouTube imports. `yt-dlp` reuses the Bun runtime already present in the image to solve YouTube's JavaScript challenges.
+As a temporary workaround for [Portainer's fixed 15-minute deployment deadline](https://github.com/portainer/portainer/issues/13314), the container installs `python3`, `py3-pip`, `ffmpeg` and the pinned YouTube packages **at startup**, before starting the website. Portainer can finish creating the container while installation continues. The first start requires outbound access to Alpine and Python package repositories, and the website remains unavailable until installation completes. Follow progress with `docker compose logs -f super-captions`.
+
+Completed installation is kept in the container's writable layer. Restarting the same container checks the requirements fingerprint and executables, then skips installation. Recreating the container installs again. An installation failure exits without starting the website or recording success; the existing `restart: unless-stopped` policy retries it.
+
+`YT_DLP_PATH` points at `/opt/youtube/bin/yt-dlp`. `yt-dlp` reuses the Bun runtime already present in the image to solve YouTube's JavaScript challenges.
+
+After Portainer supports a configurable deadline, restore build-time installation by changing `ARG YOUTUBE_DEPS_AT_BUILD=false` to `true` in the Dockerfile, or by passing `--build-arg YOUTUBE_DEPS_AT_BUILD=true` to `docker build`. The same installer runs during the build and the startup check skips it.
+
+The startup regression checks run in a disposable container without downloading Python packages:
+
+```bash
+docker run --rm -v "$PWD:/source:ro" oven/bun:1.4.2-alpine sh /source/tests/docker-startup.sh
+```
 
 ## Architecture notes
 
