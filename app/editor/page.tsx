@@ -6,6 +6,7 @@ import { AppHeader } from "@/components/app-header";
 import { VideoPreview, type VideoPreviewHandle } from "@/components/video-preview";
 import { CaptionList } from "@/components/caption-list";
 import { SpeakerPanel } from "@/components/speaker-panel";
+import { YouTubeCaptions } from "@/components/youtube-captions";
 import { ExportBar } from "@/components/export-bar";
 import { useProject } from "@/store/project-store";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -28,6 +29,7 @@ export default function EditorPage() {
       <AppHeader />
       <section className="container mx-auto space-y-4 px-6">
         <ExportBar />
+        <YouTubeCaptions />
 
         <div className="grid gap-4 lg:grid-cols-[1.15fr_1fr]">
           <div className="space-y-3">

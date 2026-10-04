@@ -1,6 +1,6 @@
 # Pinned to the latest stable Bun release at the time of writing.
 # Bump deliberately — never use `:latest` so deploys remain reproducible.
-ARG BUN_IMAGE=oven/bun:1.3.13-alpine
+ARG BUN_IMAGE=oven/bun:1.4.2-alpine
 
 FROM ${BUN_IMAGE} AS deps
 WORKDIR /app
@@ -20,6 +20,13 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+
+# YouTube downloads use yt-dlp with the existing Bun runtime for JS challenges.
+COPY requirements-youtube.txt ./
+RUN apk add --no-cache python3 py3-pip ffmpeg \
+    && python3 -m venv /opt/youtube \
+    && /opt/youtube/bin/pip install --no-cache-dir -r requirements-youtube.txt
+ENV YT_DLP_PATH=/opt/youtube/bin/yt-dlp
 
 # Next.js standalone output: ship only what's needed.
 COPY --from=builder /app/public ./public

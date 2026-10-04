@@ -12,4 +12,5 @@ docker-compose.yml
 .claude
 *.log
 *.tsbuildinfo
+.venv-youtube
 .DS_Store
