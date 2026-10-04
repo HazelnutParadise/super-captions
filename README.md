@@ -9,7 +9,7 @@ A privacy-preserving web app that auto-captions videos:
 5. Captions can be edited per-segment, with optional speaker diarisation and per-speaker styling (background, text border, text fill, font, size, etc.).
 6. On export, captions are burned back into the video via Canvas + MediaRecorder, again entirely in-browser. An `.srt` file can be downloaded from the same bar.
 
-Built with **Next.js 15 (App Router)**, **TypeScript**, **Tailwind**, **shadcn/ui**, **zustand**, and **ffmpeg.wasm**.
+Built with **Next.js 16 (App Router)**, **TypeScript**, **Tailwind**, **shadcn/ui**, **zustand**, and **ffmpeg.wasm**.
 
 ## Local development
 
@@ -20,11 +20,11 @@ npm run dev
 
 Set `WHISPER_GATEWAY_URL` to a reachable gateway — from the host the gateway is on port `5148`, see `.env.example`.
 
-Tests run on Bun — `npm test` executes `bun test`.
+Tests run on Bun — `npm test` executes `bun test`. `npm run lint` runs ESLint, and `npm run typecheck` runs the TypeScript 7 compiler. The `typescript` package aliases the official TypeScript 6 compatibility package for Next.js and ESLint APIs; `@typescript/native` supplies the latest TypeScript 7 CLI. ESLint compatibility utilities adapt the current React plugins to ESLint 10. Tailwind 4 loads the existing theme through `@config`.
 
 ### yt-dlp for local YouTube imports
 
-The YouTube import needs `yt-dlp[default]` (pinned in `requirements-youtube.txt`) and FFmpeg on the server. On macOS, install FFmpeg first, then:
+The YouTube import needs `yt-dlp[default]` (pinned in `requirements-youtube.txt`) and FFmpeg 9.0.2 on the server. On macOS, install FFmpeg first, then:
 
 ```bash
 python3 -m venv .venv-youtube          # Python 3.10 or newer
@@ -53,14 +53,15 @@ Limits, all enforced server-side:
 - **Up to 720p H.264 video with AAC audio**, muxed to fragmented MP4 for the browser. Lower-resolution sources keep their original resolution.
 - A **10-minute budget for the whole import**, shared between the metadata probe and the download.
 - The metadata probe has a **60-second limit** before the video response begins.
+- Media requests use bounded 1 MiB HTTP ranges to avoid unbounded-request throttling.
 - Eligible media disconnects and HTTP `500`, `502`, `503`, `504` responses resume the same input with HTTP Range. Each input has at most two consecutive retries, with delays capped at two seconds and five seconds total. A whole-import budget stops FFmpeg on the fifth reconnect announcement, including retries after partial progress. The 10-minute deadline also covers recovery. `403`, `429`, ordinary EOF and non-seekable input are not retried.
 - **One active import per server process**, response transfer included; further requests get `429`.
 
 Not supported: private videos, members-only videos, age-restricted videos, anything requiring a sign-in, and playlists. `yt-dlp` runs with `--ignore-config --no-plugin-dirs` and is handed no cookies or credentials, so there is no path to authenticated content.
 
-The server keeps only pipe buffers while downloading and muxing. Backpressure slows the downloader when the browser reads slowly. No video files are written to the server, so processed parts need no disk cleanup. Completion, cancellation, errors and timeout release the process and import slot. A successful FFmpeg exit must also include its final progress marker and a muxed duration matching the source metadata. The browser independently checks the received MP4 duration before audio extraction or transcription. Both checks allow a difference of `max(1, min(3, sourceSeconds * 0.001))` seconds for timestamp rounding and mux padding. Missing or invalid duration, unreadable media, and shorter or longer results outside that tolerance fail the import. The complete video stays in the browser for caption editing and export. Audio transcription still uses the existing gateway proxy and its temporary audio staging.
+The server keeps only pipe buffers while downloading and muxing. Backpressure slows the downloader when the browser reads slowly. No video files are written to the server, so processed parts need no disk cleanup. Completion, cancellation, errors and timeout release the process and import slot. A successful FFmpeg exit must also include its final progress marker and a muxed duration and both video/audio presentation endpoints matching the source metadata. Packet timestamps are consumed in bounded pipe buffers; reordered frames use the greatest endpoint, and the final packet duration is included. The browser independently checks the received MP4 duration before audio extraction or transcription. Both checks allow a difference of `max(1, min(3, sourceSeconds * 0.001))` seconds for timestamp rounding and mux padding. Missing or invalid duration, unreadable media, and shorter or longer results outside that tolerance fail the import. The complete video stays in the browser for caption editing and export. Audio transcription still uses the existing gateway proxy and its temporary audio staging.
 
-Each started import writes one JSON `youtube-import-server` record to server stdout: its random `importId`, expected source duration, FFmpeg version and exit code, final progress duration/marker, enqueued byte count, reconnect announcements, outcome and elapsed milliseconds. The response supplies `X-YouTube-Import-Id` for correlation, including failures before streaming. The browser console writes one `youtube-import-client` record with the same ID, expected/measured duration, received bytes, outcome and elapsed time. Missing measurements are `null`. Compare these records to distinguish a transport failure from browser duration rejection. Signed media URLs, video titles, credentials and raw FFmpeg stderr are excluded. FFmpeg must support the [HTTP reconnect options](https://ffmpeg.org/ffmpeg-protocols.html#http); verify the installed deployment-image version with the real-media tests.
+Each started import writes one JSON `youtube-import-server` record to server stdout: its random `importId`, expected source duration, FFmpeg version and exit code, final progress duration/marker, video/audio endpoints (`trackEndSeconds`), enqueued byte count, reconnect announcements, outcome and elapsed milliseconds. The response supplies `X-YouTube-Import-Id` for correlation, including failures before streaming. The browser console writes one `youtube-import-client` record with the same ID, expected/measured duration, received bytes, outcome and elapsed time. Missing measurements are `null`. Compare these records to distinguish a transport failure from browser duration rejection. Signed media URLs, video titles, credentials and raw FFmpeg stderr are excluded. The deployment image builds pinned FFmpeg 9.0.2 from its checksum-verified official release archive. The real-media tests check its [HTTP range/reconnect options](https://ffmpeg.org/ffmpeg-protocols.html#http) and stream-copy packet timestamps.
 
 ### YouTube CC and generated subtitles
 
@@ -85,13 +86,20 @@ docker compose up -d --build
 
 The Dockerfile uses Bun for install, build, and runtime (`bun run server.js` on Next.js standalone output). The lockfile is `bun.lock`; `package-lock.json` is kept for local `npm` workflows.
 
-As a temporary workaround for [Portainer's fixed 15-minute deployment deadline](https://github.com/portainer/portainer/issues/13314), the container installs `python3`, `py3-pip`, `ffmpeg` and the pinned YouTube packages **at startup**, before starting the website. Portainer can finish creating the container while installation continues. The first start requires outbound access to Alpine and Python package repositories, and the website remains unavailable until installation completes. Follow progress with `docker compose logs -f super-captions`.
+As a temporary workaround for [Portainer's fixed 15-minute deployment deadline](https://github.com/portainer/portainer/issues/13314), the container installs `python3`, `py3-pip` and the pinned YouTube packages **at startup**, before starting the website. Portainer can finish creating the container while installation continues. The first start requires outbound access to Alpine and Python package repositories, and the website remains unavailable until installation completes. Follow progress with `docker compose logs -f super-captions`.
 
 Completed installation is kept in the container's writable layer. Restarting the same container checks the requirements fingerprint and executables, then skips installation. Recreating the container installs again. An installation failure exits without starting the website or recording success; the existing `restart: unless-stopped` policy retries it.
 
 `YT_DLP_PATH` points at `/opt/youtube/bin/yt-dlp`. `yt-dlp` reuses the Bun runtime already present in the image to solve YouTube's JavaScript challenges.
 
 After Portainer supports a configurable deadline, restore build-time installation by changing `ARG YOUTUBE_DEPS_AT_BUILD=false` to `true` in the Dockerfile, or by passing `--build-arg YOUTUBE_DEPS_AT_BUILD=true` to `docker build`. The same installer runs during the build and the startup check skips it.
+
+FFmpeg is compiled into the image at build time, with H.264/AAC MP4 and HTTPS support. Test the same binary against interrupted, shortened and complete inputs:
+
+```bash
+docker build --target youtube-test -t captions-youtube-test .
+docker run --rm -v "$PWD:/source:ro" captions-youtube-test bun test tests/youtube-recovery.test.mjs
+```
 
 The startup regression checks run in a disposable container without downloading Python packages:
 

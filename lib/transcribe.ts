@@ -12,6 +12,7 @@ export interface AdvancedResponse {
   segments?: SegmentTimestamp[];
   diarization?: DiarizationSegment[];
   speakers?: string[];
+  llmProcessed?: boolean;
 }
 
 export interface SegmentTimestamp {
@@ -315,7 +316,7 @@ async function runTranscriptionAttempt(
   // Re-segment overly long captions. Whisper sometimes emits 60+ char single
   // segments for a fast monologue with no breath pauses; we slice them on
   // punctuation so each caption reads in one glance.
-  if (!(data as any).llmProcessed) {
+  if (!(data as AdvancedResponse).llmProcessed) {
     segments = resegment(segments);
   }
 

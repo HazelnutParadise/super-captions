@@ -23,8 +23,6 @@ function CCDownloads({ url, filename }: { url: string; filename: string }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setError(null);
     requestYouTubeCaptions(url, controller.signal).then(result => {
       if (controller.signal.aborted || !("tracks" in result)) return;
       setTracks(result.tracks);
@@ -89,7 +87,10 @@ function CCDownloads({ url, filename }: { url: string; filename: string }) {
       {error ? (
         <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
           <p role="alert" className="text-sm text-red-400">{error}</p>
-          <Button variant="outline" size="sm" onClick={() => tracks.length ? void download() : setReload(r => r + 1)} disabled={downloading || loading} className="self-start shrink-0">重試 CC</Button>
+          <Button variant="outline" size="sm" onClick={() => {
+            if (tracks.length) void download();
+            else { setLoading(true); setError(null); setReload(r => r + 1); }
+          }} disabled={downloading || loading} className="self-start shrink-0">重試 CC</Button>
         </div>
       ) : null}
     </div>

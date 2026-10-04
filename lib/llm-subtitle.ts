@@ -74,7 +74,11 @@ const SYSTEM_PROMPT = `你是一個專業的字幕編輯助手。請將輸入的
 const MAX_LLM_RETRIES = 5;
 const BACKOFF_BASE_MS = 1500;
 
-async function callOllamaWithRetry(inputData: any): Promise<any> {
+interface SubtitleCorrection {
+  results: { id: string | number; sub_segments?: string[] }[];
+}
+
+async function callOllamaWithRetry(inputData: { segments: { id: string; text: string }[] }): Promise<SubtitleCorrection | undefined> {
   let release: (() => void) | null = null;
   try {
     release = await ollamaLock.acquire();
@@ -169,9 +173,9 @@ export async function correctAndResegmentWithLLM(
 
     for (const originalSeg of batch) {
       const origId = String(originalSeg.id);
-      const llmResult = responseJson?.results?.find((r: any) => String(r.id) === origId);
+      const llmResult = responseJson?.results?.find((r) => String(r.id) === origId);
 
-      let subTexts: string[] =
+      const subTexts: string[] =
         llmResult?.sub_segments && Array.isArray(llmResult.sub_segments)
           ? llmResult.sub_segments.map((s: string) => s.trim())
           : [originalSeg.text ?? ""];

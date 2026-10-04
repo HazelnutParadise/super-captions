@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,12 +27,29 @@ jobs:
       - name: Docker startup regression checks
         run: docker run --rm -v "$PWD:/source:ro" oven/bun:1.4.2-alpine sh /source/tests/docker-startup.sh
       - name: Real YouTube transport regression checks
-        run: >-
-          docker run --rm -v "$PWD:/source:ro" -w /source oven/bun:1.4.2-alpine
-          sh -c 'apk add --no-cache ffmpeg nodejs && REQUIRE_YOUTUBE_TRANSPORT_TESTS=1 bun test tests/youtube-recovery.test.mjs'
+        run: |
+          docker build --target youtube-test -t captions-youtube-test .
+          docker run --rm -v "$PWD:/source:ro" captions-youtube-test bun test tests/youtube-recovery.test.mjs
+      - name: Lint
+        run: bun run lint
       - name: Typecheck
         run: bun run typecheck
       - name: Build
         run: bun run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+      - name: Build deployment image
+        run: docker build --build-arg YOUTUBE_DEPS_AT_BUILD=true -t captions-runtime .
+      - name: Deployment runtime smoke check
+        run: |
+          docker run --rm --entrypoint sh captions-runtime -c 'ldd /opt/ffmpeg/bin/ffmpeg && ffmpeg -version && /opt/youtube/bin/yt-dlp --version'
+          docker run --rm -d --name captions-runtime-smoke -p 127.0.0.1:3001:3000 captions-runtime
+          trap 'docker logs captions-runtime-smoke; docker rm -f captions-runtime-smoke' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3001/api > /tmp/captions-api.json; then
+              bun -e 'const api = await Bun.file("/tmp/captions-api.json").json(); if (!Array.isArray(api.endpoints) || !api.endpoints.some(e => e.path === "/api/youtube")) process.exit(1);'
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
