@@ -42,6 +42,7 @@ console.log(JSON.stringify({ id, title: '完整性測試影片', duration: ${SOU
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 if (process.env.FFMPEG_ARGV_LOG) fs.appendFileSync(process.env.FFMPEG_ARGV_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === '-version') { console.log('ffmpeg version 8.1.2 Copyright test'); process.exit(0); }
 if (args.at(-1) !== 'pipe:1' || !args.includes('copy')) process.exit(9);
 const id = new URL(args[args.indexOf('-i') + 1]).pathname.slice(3);
 // Emit the same progress protocol as FFmpeg when requested.
@@ -61,9 +62,24 @@ const PLANS = {
   truncat0000:  {steps: [${us(CUT_SECONDS)}], ends: false},
   noend000000:  {steps: [300000000, ${us(SOURCE_SECONDS)}], ends: false},
   nodur000000:  {steps: [null], ends: true},
+  reconnect00:  {steps: [${us(SOURCE_SECONDS)}], ends: true, reconnects: 5},
 };
 const plan = PLANS[id];
 if (!plan) process.exit(9);
+if (plan.reconnects) {
+  let count = 0;
+  const retry = () => {
+    process.stderr.write('[http @ fake] Will recon');
+    setTimeout(() => {
+      process.stderr.write('nect at ' + (++count * 100) + ' in 0 second(s), error=https://signed.invalid/secret-token\\n');
+      if (count < plan.reconnects) setTimeout(retry, 15);
+      else { process.stdout.write('bytes'); process.stderr.write(block(${us(SOURCE_SECONDS)}, true)); }
+    }, 5);
+  };
+  retry();
+  process.stdout.write('mp4-');
+  return;
+}
 process.stdout.write('mp4-');
 setTimeout(() => {
   try {
@@ -128,6 +144,33 @@ test("API announces the source duration and finishes only on a complete FFmpeg p
   const args = await lastFfmpegArgs();
   const index = args?.indexOf("-progress") ?? -1;
   assert.ok(index >= 0 && args[index + 1] === "pipe:2", "FFmpeg must be asked for -progress pipe:2");
+  for (let input = 0; input < 2; input++) {
+    const end = args.indexOf("-i", input ? args.indexOf("-i") + 2 : 0);
+    const start = input ? args.indexOf("-i") + 2 : 0;
+    const options = args.slice(start, end);
+    for (const [flag, value] of [["-reconnect", "1"], ["-reconnect_on_network_error", "1"],
+      ["-reconnect_on_http_error", "500,502,503,504"], ["-reconnect_max_retries", "2"],
+      ["-reconnect_delay_max", "2"], ["-reconnect_delay_total_max", "5"], ["-respect_retry_after", "0"]]) {
+      assert.equal(options[options.indexOf(flag) + 1], value, `input ${input}: ${flag}`);
+    }
+  }
+});
+
+test("repeated partial progress exhausts the whole-import reconnect budget and releases the slot", async () => {
+  const savedInfo = console.info;
+  const diagnostics = [];
+  console.info = record => diagnostics.push(JSON.parse(record));
+  try {
+    const error = await assertStreamFails("reconnect00", "five reconnect attempts must fail");
+    assert.match(error.message, /重試|中斷/);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].outcome, "retry_exhausted");
+    assert.equal(diagnostics[0].reconnects, 5);
+    assert.equal(diagnostics[0].ffmpegVersion, "8.1.2");
+    assert.ok(!JSON.stringify(diagnostics).includes("secret-token"));
+    assert.ok(!JSON.stringify(diagnostics).includes("https://"));
+    assert.deepEqual(await readBody(await startImport("complete000")), { text: BODY });
+  } finally { console.info = savedInfo; }
 });
 
 test("progress inside the 2.939s tolerance still completes the response", async () => {
@@ -236,6 +279,9 @@ async function withClient(scenario, options, run) {
   const header = options && "header" in options ? options.header : HEADER_SECONDS;
   const dom = installDom(scenario);
   const savedFetch = globalThis.fetch;
+  const savedInfo = console.info;
+  const diagnostics = [];
+  console.info = (record) => diagnostics.push(JSON.parse(record));
   const progress = [];
   let pulled;
   const wasPulled = new Promise((resolve) => { pulled = resolve; });
@@ -251,15 +297,17 @@ async function withClient(scenario, options, run) {
       },
       pull() { pulled(); },
     });
-    const headers = { "Content-Type": "video/mp4", "X-Video-Filename": encodeURIComponent("完整性測試.mp4") };
+    const headers = { "Content-Type": "video/mp4", "X-Video-Filename": encodeURIComponent("完整性測試.mp4"),
+      "X-YouTube-Import-Id": "7ca78c51-a529-490a-8732-ef32bb9d3e25" };
     if (header !== undefined) headers["X-Video-Duration"] = header;
     if (contentLength !== undefined) headers["Content-Length"] = String(contentLength);
     return new Response(stream, { headers });
   };
   try {
-    return await run({ ...dom, progress, wasPulled });
+    return await run({ ...dom, progress, wasPulled, diagnostics });
   } finally {
     globalThis.fetch = savedFetch;
+    console.info = savedInfo;
     dom.restore();
   }
 }
@@ -273,6 +321,26 @@ const waitFor = async (ready, label) => {
 };
 
 const assertRejected = (promise) => assert.rejects(promise, /影片|取消|aborted/i);
+
+test("client diagnostics distinguish complete media from a duration mismatch without logging the source", async () => {
+  for (const duration of [SOURCE_SECONDS, CUT_SECONDS]) {
+    await withClient({ duration }, async (client) => {
+      const pending = importYouTubeVideo("https://youtu.be/complete000");
+      if (duration === SOURCE_SECONDS) await pending;
+      else await assertRejected(pending);
+      assert.equal(client.diagnostics.length, 1);
+      const record = client.diagnostics[0];
+      assert.equal(record.event, "youtube-import-client");
+      assert.equal(record.importId, "7ca78c51-a529-490a-8732-ef32bb9d3e25");
+      assert.equal(record.expectedDuration, SOURCE_SECONDS);
+      assert.equal(record.measuredDuration, duration);
+      assert.equal(record.bytesReceived, BODY.length);
+      assert.equal(record.outcome, duration === SOURCE_SECONDS ? "complete" : "duration_mismatch");
+      assert.ok(!JSON.stringify(record).includes("complete000"));
+      assert.ok(!JSON.stringify(record).includes("https://"));
+    });
+  }
+});
 
 test("a complete stream reports 100 only after the File metadata matches the source", async () => {
   await withClient({ duration: SOURCE_SECONDS }, async (client) => {
@@ -305,8 +373,17 @@ test("missing, non-numeric and out-of-range X-Video-Duration headers are all rej
     await withClient({ duration: SOURCE_SECONDS }, { header }, async (client) => {
       await assertRejected(importYouTubeVideo("https://youtu.be/complete000"));
       assert.deepEqual([...client.live], [], `header ${String(header)}`);
+      assert.equal(client.diagnostics[0].outcome, "invalid_headers");
     });
   }
+});
+
+test("client diagnostics identify a size limit separately from an interrupted transfer", async () => {
+  await withClient({ duration: SOURCE_SECONDS }, { contentLength: 501 * 1024 * 1024 }, async client => {
+    await assertRejected(importYouTubeVideo("https://youtu.be/complete000"));
+    assert.equal(client.diagnostics[0].outcome, "size_limit");
+    assert.equal(client.diagnostics[0].bytesReceived, 0);
+  });
 });
 
 test("an unknown metadata duration is settled by seeking a large time until durationchange", async () => {
