@@ -28,7 +28,7 @@ if (!url.startsWith('https://www.youtube.com/watch?v=')) process.exit(9);
 if (id === 'private0000') { console.error('Private video'); process.exit(1); }
 if (id === 'blocked0000') { console.error('Sign in to confirm you’re not a bot'); process.exit(1); }
 if (args.includes('--dump-single-json')) {
-  console.log(JSON.stringify({ id, title: '測試影片 / 字幕', duration: id === 'long0000000' ? 3601 : 3,
+  console.log(JSON.stringify({ id, title: '測試影片 / 字幕', duration: id === 'long0000000' ? 3601 : id === 'short000000' ? 2939 : 3,
     is_live: id === 'live0000000', live_status: id === 'soon0000000' ? 'is_upcoming' : 'not_live',
     requested_formats: [{filesize: id === 'large000000' ? 524288001 : 40, url:'https://test.googlevideo.com/'+id, vcodec:'avc1.4d401f'},
       {filesize:10, url:'https://test.googlevideo.com/audio-'+id, acodec:'mp4a.40.2'}] }));
@@ -44,7 +44,7 @@ const id = new URL(args[args.indexOf('-i')+1]).pathname.slice(1);
 if (id === 'empty000000') process.exit(0);
 if (id === 'failed00000') process.exit(1);
 process.stdout.write('test-');
-setTimeout(() => {if(id==='broken00000') process.exit(1); process.stdout.write('video-bytes');}, id === 'slow0000000' ? 60000 : 100);
+setTimeout(() => {if(id==='broken00000') process.exit(1); process.stdout.write('video-bytes'); process.stderr.write('out_time_us='+ (id==='short000000' ? 859100000 : 3000000) +'\\nprogress=end\\n');}, id === 'slow0000000' ? 60000 : 100);
 `);
   await chmod(ffmpeg, 0o755);
   process.env.FFMPEG_PATH = ffmpeg;
@@ -92,6 +92,7 @@ test("API streams the first muxed bytes before completion, without temporary vid
   assert.equal(response.headers.get("content-type"), "video/mp4");
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(response.headers.get("content-length"), null);
+  assert.equal(response.headers.get("x-video-duration"), "3");
   assert.equal(decodeURIComponent(response.headers.get("x-video-filename")), "測試影片 _ 字幕.mp4");
   const reader = response.body.getReader();
   const first = await reader.read();
@@ -166,12 +167,17 @@ test("concurrent import is rejected until the first response is consumed or canc
 
 test("client creates the same File input as local upload and reports progress", async () => {
   const saved = globalThis.fetch;
+  const savedDocument = globalThis.document;
+  globalThis.document = {createElement: () => ({
+    duration: 3, pause() {}, removeAttribute() {}, load() {},
+    set src(value) {queueMicrotask(() => this.onloadedmetadata?.());},
+  })};
   const progress = [];
   globalThis.fetch = async (url, init) => {
     assert.equal(url, "/api/youtube");
     assert.equal(JSON.parse(init.body).url, URL);
     return new Response("video", {headers: {"Content-Type":"video/mp4", "Content-Length":"5",
-      "X-Video-Filename":encodeURIComponent("測試.mp4")}});
+      "X-Video-Filename":encodeURIComponent("測試.mp4"), "X-Video-Duration":"3"}});
   };
   try {
     const file = await importYouTubeVideo(`https://youtu.be/${ID}`, p => progress.push(p));
@@ -179,7 +185,7 @@ test("client creates the same File input as local upload and reports progress", 
     assert.equal(file.name, "測試.mp4");
     assert.equal(await file.text(), "video");
     assert.equal(progress.at(-1), 100);
-  } finally {globalThis.fetch = saved;}
+  } finally {globalThis.fetch = saved; globalThis.document = savedDocument;}
 });
 test("client handles API error, invalid/truncated/oversized and empty responses", async () => {
   const saved = globalThis.fetch;
@@ -212,4 +218,31 @@ test("API overview lists every documented operation and health schema matches it
     const schema = spec.paths["/api/health"].get.responses[response.status].content["application/json"].schema;
     for (const required of schema.required) assert.ok(required in body, required);
   } finally {globalThis.fetch = saved;}
+});
+
+
+test("exit-zero shortened media is rejected and the import slot can be reused", async () => {
+  const video = await downloadYouTubeVideo("https://youtu.be/short000000", new AbortController().signal);
+  try {
+    await assert.rejects(() => new Response(video.stream).arrayBuffer(), /不完整/);
+  } finally { await video.cleanup(); }
+  const next = await downloadYouTubeVideo(URL, new AbortController().signal);
+  await new Response(next.stream).arrayBuffer();
+});
+
+test("client rejects clean EOF with a playable short prefix before reporting complete", async () => {
+  const savedFetch = globalThis.fetch;
+  const savedDocument = globalThis.document;
+  const progress = [];
+  globalThis.document = {createElement: () => ({
+    duration: 859.1, pause() {}, removeAttribute() {}, load() {},
+    set src(value) {queueMicrotask(() => this.onloadedmetadata?.());},
+  })};
+  globalThis.fetch = async () => new Response("prefix", {headers: {
+    "Content-Type": "video/mp4", "X-Video-Duration": "2939",
+  }});
+  try {
+    await assert.rejects(() => importYouTubeVideo(URL, p => progress.push(p)), /不完整/);
+    assert.equal(progress.includes(100), false);
+  } finally {globalThis.fetch = savedFetch; globalThis.document = savedDocument;}
 });

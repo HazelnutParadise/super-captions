@@ -32,6 +32,7 @@ export async function POST(request: Request): Promise<Response> {
     return new Response(video.stream, { headers: {
       "Content-Type": "video/mp4",
       "X-Video-Filename": encodeURIComponent(video.filename),
+      "X-Video-Duration": String(video.duration),
       "Content-Disposition": `attachment; filename="youtube-video.mp4"; filename*=UTF-8''${encodeURIComponent(video.filename)}`,
       "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Accel-Buffering": "no",
     } });
