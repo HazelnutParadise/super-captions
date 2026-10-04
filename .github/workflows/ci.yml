@@ -23,6 +23,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Test
         run: bun test
+      - name: Docker startup regression checks
+        run: docker run --rm -v "$PWD:/source:ro" oven/bun:1.4.2-alpine sh /source/tests/docker-startup.sh
       - name: Typecheck
         run: bun run typecheck
       - name: Build
