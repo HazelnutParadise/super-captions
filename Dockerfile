@@ -21,6 +21,13 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# YouTube downloads use yt-dlp with the existing Bun runtime for JS challenges.
+COPY requirements-youtube.txt ./
+RUN apk add --no-cache python3 py3-pip ffmpeg \
+    && python3 -m venv /opt/youtube \
+    && /opt/youtube/bin/pip install --no-cache-dir -r requirements-youtube.txt
+ENV YT_DLP_PATH=/opt/youtube/bin/yt-dlp
+
 # Next.js standalone output: ship only what's needed.
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./

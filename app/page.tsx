@@ -27,15 +27,15 @@ export default function Home() {
           </div>
           <RotatingHeadline />
           <p className="text-metallic max-w-xl text-base leading-relaxed">
-            全程在你的瀏覽器裡處理，<b>只把音訊送上雲</b>。
+            選擇本機影片或貼上 YouTube 網址，<b>自動生成字幕</b>。
             多人對話自動分人、逐句校稿、樣式自選，最後字幕燒進影片直接下載。
           </p>
 
           <div className="grid grid-cols-2 gap-3 pt-2 md:grid-cols-3">
             <Feature
               icon={<ShieldCheck className="h-5 w-5" />}
-              title="影片不外流"
-              desc="只送音訊上雲，原始檔留在你的裝置"
+              title="本機影片不上傳"
+              desc="本機原始檔留在裝置，YouTube 影片經伺服器串流匯入"
             />
             <Feature
               icon={<Users className="h-5 w-5" />}
@@ -70,7 +70,7 @@ export default function Home() {
 
       <section className="container mx-auto px-6 pt-16">
         <div className="grid gap-4 md:grid-cols-4">
-          <StatCard num="1" title="選擇影片" desc="拖曳或挑選本機影片" />
+          <StatCard num="1" title="選擇影片" desc="挑選本機影片或貼上 YouTube 網址" />
           <StatCard num="2" title="本機擷取音訊" desc="ffmpeg.wasm 抽出音軌" />
           <StatCard
             num="3"

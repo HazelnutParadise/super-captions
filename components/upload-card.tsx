@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -25,11 +27,14 @@ import {
 } from "@/components/ui/select";
 import { extractAudio } from "@/lib/ffmpeg-client";
 import { transcribeAudio } from "@/lib/transcribe";
+import { importYouTubeVideo } from "@/lib/youtube-client";
+import { normalizeYouTubeUrl } from "@/lib/youtube-url";
 import { useProject } from "@/store/project-store";
 import { cn, formatShort } from "@/lib/utils";
 
 type Stage =
   | "idle"
+  | "downloading"
   | "loading-ffmpeg"
   | "extracting"
   | "queued"
@@ -40,6 +45,7 @@ type Stage =
 
 const STAGE_LABEL: Record<Stage, string> = {
   idle: "等待影片",
+  downloading: "串流下載並合併影音…",
   "loading-ffmpeg": "載入 FFmpeg.wasm…",
   extracting: "在瀏覽器內分離音訊…",
   queued: "排隊中…",
@@ -52,6 +58,13 @@ const STAGE_LABEL: Record<Stage, string> = {
 export function UploadCard() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const processingRef = useRef(false);
+  const importController = useRef<AbortController | null>(null);
+  const [source, setSource] = useState<"file" | "youtube">("file");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => () => importController.current?.abort(), []);
 
   const [stage, setStage] = useState<Stage>("idle");
   const [progress, setProgress] = useState(0);
@@ -102,6 +115,7 @@ export function UploadCard() {
       toast.error("請選擇影片檔案");
       return;
     }
+    setError(null);
     setFile(f);
   }, []);
 
@@ -128,24 +142,40 @@ export function UploadCard() {
   }
 
   const start = async () => {
-    if (!file) {
+    if (processingRef.current) return;
+    if (source === "file" && !file) {
       toast.error("先選擇影片");
       return;
     }
+    if (source === "youtube") {
+      try { normalizeYouTubeUrl(youtubeUrl); }
+      catch (e) { setError((e as Error).message); return; }
+    }
+    processingRef.current = true;
+    setError(null);
     try {
       // Prefetch the editor page EARLY so the chunk is ready by the time
       // processing finishes. In fast mode (no LLM) the whole pipeline
       // completes in seconds — prefetching right before push is too late.
       router.prefetch("/editor");
       setProgress(0);
+      let videoFile = file;
+      if (source === "youtube") {
+        setStage("downloading");
+        const controller = new AbortController();
+        importController.current = controller;
+        videoFile = await importYouTubeVideo(youtubeUrl, setProgress, controller.signal);
+      }
+      if (!videoFile) throw new Error("沒有取得影片");
       setStage("loading-ffmpeg");
-      const meta = await probeVideoMeta(file);
-      const url = URL.createObjectURL(file);
-      setVideo(file, url);
+      setProgress(0);
+      const meta = await probeVideoMeta(videoFile);
+      const url = URL.createObjectURL(videoFile);
+      setVideo(videoFile, url);
       setVideoMeta(meta.duration, meta.width || 1280, meta.height || 720);
 
       setStage("extracting");
-      const audio = await extractAudio(file, (r) => setProgress(r * 100));
+      const audio = await extractAudio(videoFile, (r) => setProgress(r * 100));
 
       setStage("transcribing");
       setProgress(0);
@@ -227,19 +257,33 @@ export function UploadCard() {
       router.push("/editor");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
       toast.error(`處理失敗：${msg}`);
       setStage("idle");
       setProgress(0);
       setQueueAhead(0);
       setRetry(null);
+    } finally {
+      processingRef.current = false;
+      importController.current = null;
     }
   };
 
   const busy = stage !== "idle";
 
   return (
-    <Card className="border-border/60 bg-card/60 p-8 backdrop-blur-xl">
+    <Card className="border-border/60 bg-card/60 p-5 backdrop-blur-xl sm:p-8">
       <div className="space-y-6">
+        <Tabs value={source} onValueChange={(value) => {
+          if (processingRef.current) return;
+          setSource(value as "file" | "youtube");
+          setError(null);
+        }}>
+          <TabsList className="mb-3 grid w-full grid-cols-2" aria-label="影片來源">
+            <TabsTrigger value="file" disabled={busy}>本機影片</TabsTrigger>
+            <TabsTrigger value="youtube" disabled={busy}>YouTube 網址</TabsTrigger>
+          </TabsList>
+          <TabsContent value="file">
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -262,6 +306,7 @@ export function UploadCard() {
             type="file"
             accept="video/*"
             className="hidden"
+            disabled={busy}
             onChange={onPickChange}
           />
           <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/20 via-fuchsia-500/20 to-cyan-500/20 ring-1 ring-border">
@@ -276,6 +321,31 @@ export function UploadCard() {
               : "支援 MP4 / MOV / WebM / MKV 等。處理過程影片只存在於你的瀏覽器內。"}
           </div>
         </div>
+          </TabsContent>
+          <TabsContent value="youtube" className="space-y-3">
+            <Label htmlFor="youtube-url">YouTube 影片網址</Label>
+            <Input
+              id="youtube-url"
+              type="url"
+              value={youtubeUrl}
+              onChange={(e) => { setYoutubeUrl(e.target.value); setError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !busy) { e.preventDefault(); void start(); } }}
+              placeholder="https://www.youtube.com/watch?v=…"
+              disabled={busy}
+              aria-invalid={!!error}
+              aria-describedby={error ? "youtube-help source-error" : "youtube-help"}
+              autoComplete="off"
+              maxLength={2048}
+            />
+            <p id="youtube-help" className="text-xs leading-relaxed text-muted-foreground">
+              貼上單支公開影片網址，再按「開始生成字幕」。支援分享連結與 Shorts，最長 60 分鐘、最大 500 MB。
+            </p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              最高 720p，伺服器邊下載邊回傳，不保存影片檔案。請使用你有權處理的影片。私人影片、需登入的影片與直播不適用。
+            </p>
+          </TabsContent>
+        </Tabs>
+        {error && <p id="source-error" role="alert" className="text-sm text-red-400">{error}</p>}
 
         <div className="space-y-2">
           <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
@@ -345,6 +415,8 @@ export function UploadCard() {
               <span className="text-xs text-muted-foreground">
                 {stage === "queued"
                   ? "等待 Gateway 空檔"
+                  : stage === "downloading"
+                    ? "串流匯入中"
                   : stage === "transcribing"
                     ? "上傳音訊到 Gateway"
                     : stage === "retrying"
@@ -354,7 +426,7 @@ export function UploadCard() {
             </div>
             <Progress
               value={
-                stage === "queued" || stage === "retrying" || stage === "transcribing"
+                stage === "queued" || stage === "retrying" || stage === "transcribing" || stage === "downloading"
                   ? 100
                   : progress
               }
@@ -362,10 +434,12 @@ export function UploadCard() {
           </div>
         )}
 
-        <div className="flex items-center justify-between">
-          <div className="text-xs text-muted-foreground">
-            {file ? (
-              <span className="inline-flex items-center gap-1.5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 text-xs text-muted-foreground">
+            {source === "youtube" ? (
+              "匯入後可編輯字幕，並下載字幕檔或燒錄影片。"
+            ) : file ? (
+              <span className="inline-flex max-w-full items-center gap-1.5 break-all">
                 <AudioLines className="h-3.5 w-3.5 text-cyan-400" />
                 準備：{file.name} · 預估處理 ≈ {formatShort(
                   (file.size / 1024 / 1024) * 0.6
@@ -378,9 +452,9 @@ export function UploadCard() {
           <Button
             variant="gradient"
             size="lg"
-            disabled={!file || busy}
+            disabled={(source === "file" ? !file : !youtubeUrl.trim()) || busy}
             onClick={start}
-            className="min-w-[180px]"
+            className="min-w-[180px] shrink-0"
           >
             {busy ? (
               <>
