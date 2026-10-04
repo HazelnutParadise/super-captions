@@ -44,7 +44,7 @@ const id = new URL(args[args.indexOf('-i')+1]).pathname.slice(1);
 if (id === 'empty000000') process.exit(0);
 if (id === 'failed00000') process.exit(1);
 process.stdout.write('test-');
-setTimeout(() => {if(id==='broken00000') process.exit(1); process.stdout.write('video-bytes'); process.stderr.write('out_time_us='+ (id==='short000000' ? 859100000 : 3000000) +'\\nprogress=end\\n');}, id === 'slow0000000' ? 60000 : 100);
+setTimeout(() => {if(id==='broken00000') process.exit(1); process.stdout.write('video-bytes'); process.stderr.write('out_time_us='+ (id==='short000000' ? 859100000 : 3000000) +'\\nprogress=end\\n[vost#0:0/copy @ 0xabc] muxer <- pts:0 pts_time:3 dts:0 dts_time:0 duration:1 duration_time:0 size:1 latency(N/A)\\n[aost#0:1/copy @ 0xabc] muxer <- pts:0 pts_time:3 dts:0 dts_time:0 duration:1 duration_time:0 size:1 latency(N/A)\\n');}, id === 'slow0000000' ? 60000 : 100);
 `);
   await chmod(ffmpeg, 0o755);
   process.env.FFMPEG_PATH = ffmpeg;

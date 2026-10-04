@@ -18,7 +18,7 @@ export interface VideoPreviewHandle {
   pause: () => void;
 }
 
-export const VideoPreview = forwardRef<VideoPreviewHandle, {}>(function VideoPreview(
+export const VideoPreview = forwardRef<VideoPreviewHandle>(function VideoPreview(
   _props,
   exposedRef
 ) {

@@ -27,7 +27,7 @@ export function RotatingHeadline() {
 
   return (
     <h1
-      className="text-4xl font-bold leading-tight tracking-tight md:text-5xl"
+      className="text-4xl font-bold leading-tight tracking-tight md:text-5xl md:leading-none"
       style={{ perspective: "1000px" }}
     >
       <FlipPhrase text={top} />，

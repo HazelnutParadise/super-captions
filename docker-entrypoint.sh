@@ -12,8 +12,8 @@ if [ -f "$marker" ] && [ "$(cat "$marker")" = "$requirements_hash" ] \
 else
   # Invalidate any old success marker before retrying a partial installation.
   if [ -f "$marker" ]; then rm "$marker"; fi
-  echo '[startup] Installing Python, FFmpeg and YouTube dependencies. The website will start when installation completes.'
-  if ! apk add --no-cache python3 py3-pip ffmpeg; then
+  echo '[startup] Installing Python and YouTube dependencies. The website will start when installation completes.'
+  if ! apk add --no-cache python3 py3-pip; then
     echo '[startup] System dependency installation failed. The server was not started; restart the container to retry.' >&2
     exit 1
   fi
