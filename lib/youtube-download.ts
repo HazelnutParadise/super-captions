@@ -137,6 +137,7 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
   let expectedDuration: number | null = null;
   let ffmpegVersion: string | null = null;
   let muxedDuration = NaN;
+  const trackEnds = [NaN, NaN];
   let muxEnded = false;
   let bytes = 0;
   let reconnects = 0;
@@ -159,6 +160,7 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
       console.info(JSON.stringify({ event: "youtube-import-server", importId, expectedDuration,
         ffmpegVersion, ffmpegExit: converter?.exitCode ?? null,
         finalProgressSeconds: Number.isFinite(muxedDuration) ? muxedDuration : null,
+        trackEndSeconds: trackEnds.map(end => Number.isFinite(end) ? end : null),
         progressEnded: muxEnded, bytesSent: bytes, reconnects, outcome, elapsedMs: Date.now() - started }));
     }
   })();
@@ -183,7 +185,7 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
     finally { version.dispose(); }
     if (signal.aborted) throw new YouTubeImportError("匯入已取消", 499);
     if (Date.now() >= deadline) throw new YouTubeImportError("下載逾時，請稍後再試或改用本機影片", 504);
-    const args = ["-hide_banner", "-loglevel", "repeat+warning", "-nostdin", "-xerror", "-nostats", "-progress", "pipe:2"];
+    const args = ["-hide_banner", "-loglevel", "repeat+info", "-debug_ts", "-nostdin", "-xerror", "-nostats", "-progress", "pipe:2"];
     for (const format of formats) {
       const media = new URL(format.url);
       if (media.protocol !== "https:" || !media.hostname.endsWith(".googlevideo.com") || media.username || media.password || media.port) {
@@ -193,6 +195,8 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
         "-reconnect", "1", "-reconnect_on_network_error", "1",
         "-reconnect_on_http_error", "500,502,503,504", "-reconnect_max_retries", "2",
         "-reconnect_delay_max", "2", "-reconnect_delay_total_max", "5", "-respect_retry_after", "0",
+        "-request_size", "1048576", "-initial_request_size", "1048576",
+        "-short_seek_size", "1048576", "-multiple_requests", "1",
         "-i", media.href);
     }
     args.push("-map", "0:v:0", "-map", formats.length === 2 ? "1:a:0" : "0:a:0",
@@ -202,6 +206,20 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
       const lines = (progressText + text).split("\n");
       progressText = (lines.pop() ?? "").slice(-8192);
       for (const line of lines) {
+        // Stream-copy packet timestamps are emitted by -debug_ts. Track the
+        // greatest presentation endpoint, including the final packet duration,
+        // rather than aggregate progress (which can hide a shortened track).
+        const track = /^\[([va])ost#0:([01])\/copy @ [^\]]+\] muxer <- pts:\S+ pts_time:(\S+) dts:\S+ dts_time:\S+ duration:\S+ duration_time:(\S+) /.exec(line);
+        if (track) {
+          const index = Number(track[2]);
+          const pts = Number(track[3]);
+          const duration = Number(track[4]);
+          const end = pts + duration;
+          if (track[1] === (index === 0 ? "v" : "a") && Number.isFinite(pts)
+            && Number.isFinite(duration) && duration >= 0) {
+            trackEnds[index] = Number.isFinite(trackEnds[index]) ? Math.max(trackEnds[index], end) : end;
+          }
+        }
         // FFmpeg resets its native retry counter after partial progress. Bound the entire import too.
         if (/\bWill reconnect at \d+ in \d+ second\(s\)/.test(line)) {
           reconnects++;
@@ -237,7 +255,8 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
           if (part.done) {
             const error = await running.done;
             if (error) throw error;
-            if (!muxEnded || !matchesYouTubeDuration(muxedDuration, info.duration)) {
+            if (!muxEnded || !matchesYouTubeDuration(muxedDuration, info.duration)
+              || !trackEnds.every(end => matchesYouTubeDuration(end, info.duration))) {
               outcome = "incomplete";
               throw new YouTubeImportError("影片下載不完整，請重新匯入或改用本機影片", 502);
             }
