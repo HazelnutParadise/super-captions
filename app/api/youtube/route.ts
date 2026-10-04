@@ -33,12 +33,15 @@ export async function POST(request: Request): Promise<Response> {
       "Content-Type": "video/mp4",
       "X-Video-Filename": encodeURIComponent(video.filename),
       "X-Video-Duration": String(video.duration),
+      "X-YouTube-Import-Id": video.importId,
       "Content-Disposition": `attachment; filename="youtube-video.mp4"; filename*=UTF-8''${encodeURIComponent(video.filename)}`,
       "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Accel-Buffering": "no",
     } });
   } catch (error) {
     const status = error instanceof YouTubeImportError ? error.status : 500;
     const message = error instanceof YouTubeImportError ? error.message : "匯入影片失敗，請稍後再試";
-    return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
+    return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store",
+      ...(error instanceof YouTubeImportError && error.importId ? { "X-YouTube-Import-Id": error.importId } : {}),
+    } });
   }
 }
