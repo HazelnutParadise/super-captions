@@ -59,9 +59,22 @@ Not supported: private videos, members-only videos, age-restricted videos, anyth
 
 The server keeps only pipe buffers while downloading and muxing. Backpressure slows the downloader when the browser reads slowly. No video files are written to the server, so processed parts need no disk cleanup. Completion, cancellation, errors and timeout release the process and import slot. The complete video stays in the browser for caption editing and export. Audio transcription still uses the existing gateway proxy and its temporary audio staging.
 
+### YouTube CC and generated subtitles
+
+After a YouTube import, the editor offers two separate downloads:
+
+- **Generated subtitles** use the existing transcription pipeline. Edit them in the caption list, download `.srt`, or burn them into the video.
+- **YouTube CC** preserves the text and timing supplied by YouTube. Pick a language and source in the CC panel, then download its `.srt`. Original CC and YouTube automatic captions are labeled separately. Automatically translated tracks are excluded.
+
+CC downloads have a language and source suffix, such as `-youtube-cc-en.srt` or `-youtube-auto-en-orig.srt`. Downloading CC does not replace edits to generated subtitles. Local uploads keep their existing workflow.
+
+`POST /api/youtube/captions` accepts `{ "url": "…YouTube URL…" }` to return `{ "tracks": [...] }`. Each track contains `id`, `language`, `name` and `source` (`manual` or `automatic`). Pass a returned ID as `trackId` to receive `{ "track": {...}, "srt": "..." }`. An empty list means no supported CC. If YouTube refuses CC, the panel shows a retry action and generated subtitles remain available.
+
+The server reads metadata and at most **2 MiB** of subtitle text in memory. It stores no CC files or signed upstream URLs. CC requests have a **90-second overall timeout**, including a **60-second metadata timeout**, with **two concurrent requests per server process**. See `/api/openapi` for schemas and errors.
+
 ## Docker
 
-Image is built on a pinned [`oven/bun:1.3.13-alpine`](https://hub.docker.com/r/oven/bun) — bump deliberately, never `:latest`. The container joins an existing `infra-net` network and resolves the gateway at `whisper-gateway:5000`:
+Image is built on a pinned [`oven/bun:1.4.2-alpine`](https://hub.docker.com/r/oven/bun) — bump deliberately, never `:latest`. The container joins an existing `infra-net` network and resolves the gateway at `whisper-gateway:5000`:
 
 ```bash
 docker compose up -d --build

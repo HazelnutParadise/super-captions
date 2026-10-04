@@ -79,6 +79,40 @@ function startProcess(command: string, args: string[], signal: AbortSignal, dead
   };
 }
 
+/** Read bounded metadata without downloading media or writing a cache. */
+export async function readYouTubeMetadata(url: string, signal: AbortSignal, captionsOnly = false, deadline = Date.now() + 60_000) {
+  const canonical = normalizeYouTubeUrl(url);
+  if (signal.aborted) throw new YouTubeImportError("匯入已取消", 499);
+  const probe = startProcess(process.env.YT_DLP_PATH || "yt-dlp", [
+    "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-playlist", "--no-warnings",
+    "--js-runtimes", (process.versions.bun ? "bun" : "node") + ":" + process.execPath,
+    "--socket-timeout", "20", "--retries", "1", "--skip-download", "--dump-single-json",
+    ...(captionsOnly ? ["--ignore-no-formats-error", "--extractor-args", "youtube:skip=hls,dash,translated_subs"] : ["--format", FORMAT]), "--", canonical,
+  ], signal, Math.min(deadline, Date.now() + 60_000), "yt-dlp");
+  let text = "";
+  try {
+    for await (const chunk of probe.output) {
+      text += chunk.toString();
+      if (text.length > 4 * 1024 * 1024) probe.stop(new YouTubeImportError("無法讀取影片資訊", 502));
+    }
+    const error = await probe.done;
+    if (error) throw error;
+  } catch (error) {
+    const processError = await probe.done;
+    throw processError ?? error;
+  } finally { probe.dispose(); }
+  let info;
+  try { info = JSON.parse(text); } catch { throw new YouTubeImportError("無法讀取影片資訊", 502); }
+  if (!info || info._type === "playlist" || info.is_live || ["is_live", "is_upcoming", "post_live"].includes(info.live_status)) {
+    throw new YouTubeImportError("目前只支援已結束的單支影片，請勿貼上直播或播放清單", 422);
+  }
+  if (typeof info.duration !== "number" || !Number.isFinite(info.duration) || info.duration <= 0) {
+    throw new YouTubeImportError("無法確認影片長度，請改用本機影片", 422);
+  }
+  if (info.duration > YOUTUBE_MAX_DURATION) throw new YouTubeImportError("影片超過 60 分鐘，請改用本機影片", 422);
+  return info;
+}
+
 /** Resolve public streams, then mux directly to the browser. Never creates a temporary video. */
 export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Promise<VideoStream> {
   const canonical = normalizeYouTubeUrl(url);
@@ -98,33 +132,7 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
     } finally { importing = false; }
   })();
   try {
-    const probe = startProcess(process.env.YT_DLP_PATH || "yt-dlp", [
-      "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-playlist", "--no-warnings",
-      "--js-runtimes", (process.versions.bun ? "bun" : "node") + ":" + process.execPath,
-      "--socket-timeout", "20", "--retries", "1", "--skip-download", "--dump-single-json",
-      "--format", FORMAT, "--", canonical,
-    ], signal, Math.min(deadline, Date.now() + 60_000), "yt-dlp");
-    let text = "";
-    try {
-      for await (const chunk of probe.output) {
-        text += chunk.toString();
-        if (text.length > 4 * 1024 * 1024) probe.stop(new YouTubeImportError("無法讀取影片資訊", 502));
-      }
-      const error = await probe.done;
-      if (error) throw error;
-    } catch (error) {
-      const processError = await probe.done;
-      throw processError ?? error;
-    } finally { probe.dispose(); }
-    let info;
-    try { info = JSON.parse(text); } catch { throw new YouTubeImportError("無法讀取影片資訊", 502); }
-    if (!info || info._type === "playlist" || info.is_live || ["is_live", "is_upcoming", "post_live"].includes(info.live_status)) {
-      throw new YouTubeImportError("目前只支援已結束的單支影片，請勿貼上直播或播放清單", 422);
-    }
-    if (typeof info.duration !== "number" || !Number.isFinite(info.duration) || info.duration <= 0) {
-      throw new YouTubeImportError("無法確認影片長度，請改用本機影片", 422);
-    }
-    if (info.duration > YOUTUBE_MAX_DURATION) throw new YouTubeImportError("影片超過 60 分鐘，請改用本機影片", 422);
+    const info = await readYouTubeMetadata(canonical, signal, false, deadline);
     const formats = info.requested_formats ?? [info];
     if (!Array.isArray(formats) || formats.length < 1 || formats.length > 2) throw new YouTubeImportError("無法取得可用的影音格式", 502);
     const estimated = formats.reduce((sum: number, f: { filesize?: number; filesize_approx?: number }) => sum + (f.filesize ?? f.filesize_approx ?? 0), 0);

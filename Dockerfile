@@ -1,6 +1,6 @@
 # Pinned to the latest stable Bun release at the time of writing.
 # Bump deliberately — never use `:latest` so deploys remain reproducible.
-ARG BUN_IMAGE=oven/bun:1.3.13-alpine
+ARG BUN_IMAGE=oven/bun:1.4.2-alpine
 
 FROM ${BUN_IMAGE} AS deps
 WORKDIR /app

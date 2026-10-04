@@ -8,6 +8,7 @@ export async function GET() {
       { method: "GET", path: "/api/health", description: "Service health", documentation: "/api/openapi#/paths/~1api~1health" },
       { method: "POST", path: "/api/transcribe", description: "Transcribe multipart audio as NDJSON events", documentation: "/api/openapi#/paths/~1api~1transcribe" },
       { method: "POST", path: "/api/youtube", description: "Stream one public YouTube video as an MP4 (60 min, 500 MiB, up to 720p)", documentation: "/api/openapi#/paths/~1api~1youtube" },
+      { method: "POST", path: "/api/youtube/captions", description: "List native YouTube CC languages or download one original SRT track", documentation: "/api/openapi#/paths/~1api~1youtube~1captions" },
     ],
   });
 }

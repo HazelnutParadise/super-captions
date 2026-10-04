@@ -47,6 +47,7 @@ export function ExportBar() {
   const videoSize = useProject((s) => s.videoSize);
   const videoUrl = useProject((s) => s.videoUrl);
   const videoFile = useProject((s) => s.videoFile);
+  const youtubeUrl = useProject((s) => s.youtubeUrl);
 
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -227,7 +228,7 @@ export function ExportBar() {
           disabled={busy || segments.length === 0}
         >
           <FileText className="h-4 w-4" />
-          下載 .srt
+          {youtubeUrl ? "下載生成字幕 .srt" : "下載 .srt"}
         </Button>
         <Button
           variant="gradient"

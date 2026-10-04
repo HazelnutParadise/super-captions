@@ -5,6 +5,13 @@ const errorResponse = (description: string) => ({
   } } },
 });
 
+const captionTrack = {
+  type: "object", required: ["id", "language", "name", "source"], properties: {
+    id: { type: "string", description: "Track ID returned by listing, e.g. manual:en or automatic:en-orig" },
+    language: { type: "string" }, name: { type: "string" }, source: { type: "string", enum: ["manual", "automatic"] },
+  },
+};
+
 export async function GET() {
   return Response.json({
     openapi: "3.0.3",
@@ -43,6 +50,35 @@ export async function GET() {
           "502": errorResponse("YouTube blocked the download, download failed or returned no video"),
           "503": errorResponse("Server downloader or FFmpeg is unavailable"),
           "504": errorResponse("Download timed out"),
+        },
+      } },
+      "/api/youtube/captions": { post: {
+        summary: "List YouTube CC tracks or retrieve one as SRT",
+        description: "Accepts the same single-video URLs and 60-minute limit as video import. Omit trackId to list original CC and native YouTube automatic captions. Auto-translated tracks are excluded and repeated native automatic tracks are deduplicated. An empty tracks array means no supported CC. Pass a listed trackId to retrieve the unedited SRT with its original timing. No media download, temporary subtitle files, cookies or authentication. Two concurrent CC requests per server process, 90-second overall deadline and 60-second metadata deadline. Request body limited to 4096 bytes; subtitle body limited to 2 MiB. YouTube can refuse CC independently of video import; this does not prevent generated subtitles. Signed upstream URLs stay on the server.",
+        requestBody: { required: true, content: { "application/json": { schema: {
+          type: "object", required: ["url"], properties: {
+            url: { type: "string", format: "uri", maxLength: 2048 },
+            trackId: { type: "string", pattern: "^(manual|automatic):[A-Za-z0-9_-]{1,80}$", description: "Omit to list tracks; use one returned ID to download" },
+          },
+        }, examples: {
+          list: { value: { url: "https://www.youtube.com/watch?v=jNQXAC9IVRw" } },
+          download: { value: { url: "https://www.youtube.com/watch?v=jNQXAC9IVRw", trackId: "manual:en" } },
+        } } } },
+        responses: {
+          "200": { description: "Track list (possibly empty), or one original SRT track", content: { "application/json": { schema: { oneOf: [
+            { type: "object", required: ["tracks"], properties: { tracks: { type: "array", items: captionTrack } } },
+            { type: "object", required: ["track", "srt"], properties: { track: captionTrack, srt: { type: "string", description: "UTF-8 SRT subtitle text" } } },
+          ] } } } },
+          "400": errorResponse("Malformed or oversized JSON, invalid video URL or trackId"),
+          "404": errorResponse("Selected track is no longer available"),
+          "413": errorResponse("Subtitle exceeds 2 MiB"),
+          "422": errorResponse("Live, upcoming, over-length, private, restricted or unavailable video"),
+          "429": errorResponse("Two CC requests are active; retry later"),
+          "499": errorResponse("Client cancelled CC retrieval"),
+          "500": errorResponse("Unexpected caption failure"),
+          "502": errorResponse("YouTube refused CC, or subtitle response is empty, invalid or interrupted"),
+          "503": errorResponse("Server downloader is unavailable"),
+          "504": errorResponse("Caption retrieval timed out"),
         },
       } },
       "/api/transcribe": { post: {

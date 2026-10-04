@@ -1,4 +1,20 @@
 import { normalizeYouTubeUrl, YOUTUBE_MAX_BYTES } from "./youtube-url";
+import type { YouTubeCaptionResult } from "./youtube-captions";
+
+export async function requestYouTubeCaptions(url: string, signal: AbortSignal, trackId?: string): Promise<YouTubeCaptionResult> {
+  const response = await fetch("/api/youtube/captions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: normalizeYouTubeUrl(url), ...(trackId ? { trackId } : {}) }),
+    signal,
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw Object.assign(new Error(typeof data?.error === "string" ? data.error : "取得 YouTube CC 失敗，請稍後再試"), { status: response.status });
+  if (trackId ? typeof data?.srt !== "string" || data.track?.id !== trackId : !Array.isArray(data?.tracks)) {
+    throw new Error("沒有取得可用的 CC 字幕，請稍後再試");
+  }
+  return data;
+}
 
 /** Receive a live MP4 stream as a File for the existing browser caption pipeline. */
 export async function importYouTubeVideo(

@@ -6,6 +6,7 @@ import { makeDefaultSpeaker, type CaptionSegment, type SpeakerStyle } from "@/li
 interface ProjectState {
   videoFile: File | null;
   videoUrl: string | null;
+  youtubeUrl: string | null;
   videoDuration: number;
   videoSize: { width: number; height: number };
 
@@ -15,7 +16,7 @@ interface ProjectState {
   language: string;
   useLLM: boolean;
 
-  setVideo: (file: File | null, url: string | null) => void;
+  setVideo: (file: File | null, url: string | null, youtubeUrl?: string) => void;
   setVideoMeta: (duration: number, width: number, height: number) => void;
   setSegments: (segments: CaptionSegment[]) => void;
   updateSegment: (id: string, patch: Partial<CaptionSegment>) => void;
@@ -47,6 +48,7 @@ function defaultSpeakers(): SpeakerStyle[] {
 export const useProject = create<ProjectState>((set, get) => ({
   videoFile: null,
   videoUrl: null,
+  youtubeUrl: null,
   videoDuration: 0,
   videoSize: { width: 1280, height: 720 },
 
@@ -56,10 +58,10 @@ export const useProject = create<ProjectState>((set, get) => ({
   language: "auto",
   useLLM: false,
 
-  setVideo: (file, url) =>
+  setVideo: (file, url, youtubeUrl) =>
     set((s) => {
       if (s.videoUrl && s.videoUrl !== url) URL.revokeObjectURL(s.videoUrl);
-      return { videoFile: file, videoUrl: url };
+      return { videoFile: file, videoUrl: url, youtubeUrl: youtubeUrl ?? null };
     }),
   setVideoMeta: (duration, width, height) =>
     set({ videoDuration: duration, videoSize: { width, height } }),
@@ -135,6 +137,7 @@ export const useProject = create<ProjectState>((set, get) => ({
     set({
       videoFile: null,
       videoUrl: null,
+      youtubeUrl: null,
       videoDuration: 0,
       segments: [],
       speakers: defaultSpeakers(),

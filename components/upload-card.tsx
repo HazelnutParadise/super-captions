@@ -171,7 +171,7 @@ export function UploadCard() {
       setProgress(0);
       const meta = await probeVideoMeta(videoFile);
       const url = URL.createObjectURL(videoFile);
-      setVideo(videoFile, url);
+      setVideo(videoFile, url, source === "youtube" ? normalizeYouTubeUrl(youtubeUrl) : undefined);
       setVideoMeta(meta.duration, meta.width || 1280, meta.height || 720);
 
       setStage("extracting");
