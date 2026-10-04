@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { normalizeYouTubeUrl, YOUTUBE_MAX_BYTES, YOUTUBE_MAX_DURATION } from "./youtube-url";
+import { matchesYouTubeDuration } from "./youtube-duration";
 
 export class YouTubeImportError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -11,6 +12,7 @@ export class YouTubeImportError extends Error {
 interface VideoStream {
   stream: ReadableStream<Uint8Array>;
   filename: string;
+  duration: number;
   cleanup: () => Promise<void>;
 }
 
@@ -29,7 +31,7 @@ function upstreamError(stderr: string): YouTubeImportError {
 }
 
 /** Bounded subprocess pipes; no shell and no files on disk. */
-function startProcess(command: string, args: string[], signal: AbortSignal, deadline: number, tool: string) {
+function startProcess(command: string, args: string[], signal: AbortSignal, deadline: number, tool: string, onStderr?: (text: string) => void) {
   const child = spawn(command, args, {
     stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32",
   });
@@ -52,7 +54,11 @@ function startProcess(command: string, args: string[], signal: AbortSignal, dead
   };
   const abort = () => stop(new YouTubeImportError("匯入已取消", 499));
   child.stdout.on("error", () => {});
-  child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-8192); });
+  child.stderr.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    stderr = (stderr + text).slice(-8192);
+    onStderr?.(text);
+  });
   child.on("error", (error: NodeJS.ErrnoException) => {
     failure = new YouTubeImportError(error.code === "ENOENT"
       ? "伺服器尚未安裝 " + tool + "，請聯絡管理者或改用本機影片"
@@ -137,7 +143,7 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
     if (!Array.isArray(formats) || formats.length < 1 || formats.length > 2) throw new YouTubeImportError("無法取得可用的影音格式", 502);
     const estimated = formats.reduce((sum: number, f: { filesize?: number; filesize_approx?: number }) => sum + (f.filesize ?? f.filesize_approx ?? 0), 0);
     if (estimated > YOUTUBE_MAX_BYTES) throw new YouTubeImportError("影片超過 500 MB，請改用本機影片", 413);
-    const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
+    const args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-xerror", "-nostats", "-progress", "pipe:2"];
     for (const format of formats) {
       const media = new URL(format.url);
       if (media.protocol !== "https:" || !media.hostname.endsWith(".googlevideo.com") || media.username || media.password || media.port) {
@@ -147,7 +153,17 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
     }
     args.push("-map", "0:v:0", "-map", formats.length === 2 ? "1:a:0" : "0:a:0",
       "-c", "copy", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
-    converter = startProcess(process.env.FFMPEG_PATH || "ffmpeg", args, signal, deadline, "FFmpeg");
+    let progressText = "";
+    let muxedDuration = NaN;
+    let muxEnded = false;
+    converter = startProcess(process.env.FFMPEG_PATH || "ffmpeg", args, signal, deadline, "FFmpeg", text => {
+      const lines = (progressText + text).split("\n");
+      progressText = (lines.pop() ?? "").slice(-8192);
+      for (const line of lines) {
+        if (/^out_time_us=-?\d+\r?$/.test(line)) muxedDuration = Number(line.slice(12)) / 1_000_000;
+        if (line.trim() === "progress=end") muxEnded = true;
+      }
+    });
     const running = converter;
     const iterator = running.output[Symbol.asyncIterator]();
     let first: IteratorResult<Buffer> | undefined;
@@ -171,6 +187,9 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
           if (part.done) {
             const error = await running.done;
             if (error) throw error;
+            if (!muxEnded || !matchesYouTubeDuration(muxedDuration, info.duration)) {
+              throw new YouTubeImportError("影片下載不完整，請重新匯入或改用本機影片", 502);
+            }
             finished = true;
             await cleanup();
             c.close();
@@ -194,7 +213,7 @@ export async function downloadYouTubeVideo(url: string, signal: AbortSignal): Pr
     });
     const title = (typeof info.title === "string" ? info.title : "youtube-video")
       .replace(/[\x00-\x1f\x7f/\\:*?"<>|]/g, "_").trim().slice(0, 120) || "youtube-video";
-    return { stream, filename: title + ".mp4", cleanup };
+    return { stream, filename: title + ".mp4", duration: info.duration, cleanup };
   } catch (error) {
     await cleanup();
     throw error;

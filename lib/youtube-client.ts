@@ -1,4 +1,5 @@
-import { normalizeYouTubeUrl, YOUTUBE_MAX_BYTES } from "./youtube-url";
+import { normalizeYouTubeUrl, YOUTUBE_MAX_BYTES, YOUTUBE_MAX_DURATION } from "./youtube-url";
+import { matchesYouTubeDuration } from "./youtube-duration";
 import type { YouTubeCaptionResult } from "./youtube-captions";
 
 export async function requestYouTubeCaptions(url: string, signal: AbortSignal, trackId?: string): Promise<YouTubeCaptionResult> {
@@ -16,7 +17,53 @@ export async function requestYouTubeCaptions(url: string, signal: AbortSignal, t
   return data;
 }
 
-/** Receive a live MP4 stream as a File for the existing browser caption pipeline. */
+/** Probe the received File before any audio extraction or transcription. */
+async function validateImportedVideo(file: File, expected: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const video = document.createElement("video");
+  const blobUrl = URL.createObjectURL(file);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let seeking = false;
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        video.onloadedmetadata = video.ondurationchange = video.onerror = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      const abort = () => finish(new DOMException("匯入已取消", "AbortError"));
+      const timer = setTimeout(() => finish(new Error("無法確認下載影片的長度，請重新匯入或改用本機影片")), 30_000);
+      const check = () => {
+        if (video.duration === Infinity) {
+          // Some browsers discover fragmented MP4 duration only after seeking to its end.
+          if (!seeking) {
+            seeking = true;
+            try { video.currentTime = 1e10; }
+            catch { finish(new Error("無法確認下載影片的長度，請重新匯入")); }
+          }
+          return;
+        }
+        if (!matchesYouTubeDuration(video.duration, expected)) {
+          finish(new Error("影片下載不完整，請重新匯入或改用本機影片"));
+        } else finish();
+      };
+      video.onloadedmetadata = check;
+      video.ondurationchange = check;
+      video.onerror = () => finish(new Error("下載影片無法讀取，請重新匯入或改用本機影片"));
+      signal?.addEventListener("abort", abort, { once: true });
+      video.preload = "metadata";
+      video.src = blobUrl;
+      if (signal?.aborted) abort();
+    });
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+/** Receive and validate a live MP4 stream for the existing browser caption pipeline. */
 export async function importYouTubeVideo(
   url: string,
   onProgress?: (percent: number) => void,
@@ -37,13 +84,18 @@ export async function importYouTubeVideo(
     throw new Error("沒有取得可用的影片，請稍後再試");
   }
   const total = Number(response.headers.get("content-length")) || 0;
+  const expected = Number(response.headers.get("x-video-duration"));
   const reader = response.body.getReader();
   const chunks: BlobPart[] = [];
   let received = 0;
   try {
+    if (!Number.isFinite(expected) || expected <= 0 || expected > YOUTUBE_MAX_DURATION) {
+      throw new Error("無法確認來源影片的長度，請重新匯入或改用本機影片");
+    }
     if (total > YOUTUBE_MAX_BYTES) throw new Error("影片超過 500 MB，請改用本機影片");
     while (true) {
       const { done, value } = await reader.read();
+      signal?.throwIfAborted();
       if (done) break;
       received += value.byteLength;
       if (received > YOUTUBE_MAX_BYTES) throw new Error("影片超過 500 MB，請改用本機影片");
@@ -60,6 +112,9 @@ export async function importYouTubeVideo(
   }
   let filename = "youtube-video.mp4";
   try { filename = decodeURIComponent(response.headers.get("x-video-filename") ?? filename); } catch {}
+  const file = new File(chunks, filename, { type: "video/mp4" });
+  await validateImportedVideo(file, expected, signal);
+  signal?.throwIfAborted();
   onProgress?.(100);
-  return new File(chunks, filename, { type: "video/mp4" });
+  return file;
 }
