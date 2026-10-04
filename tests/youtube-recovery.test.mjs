@@ -1,6 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createServer as createTlsServer } from "node:https";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,11 +10,13 @@ import { POST } from "../app/api/youtube/route.ts";
 
 const ffmpeg = process.env.TEST_FFMPEG_PATH || "ffmpeg";
 const ffprobe = process.env.TEST_FFPROBE_PATH || "ffprobe";
-const available = spawnSync(ffmpeg, ["-hide_banner", "-h", "protocol=http"]).stdout?.includes("reconnect_max_retries")
+const fixtureFfmpeg = process.env.TEST_FIXTURE_FFMPEG_PATH || ffmpeg;
+const httpOptions = spawnSync(ffmpeg, ["-hide_banner", "-h", "protocol=http"]).stdout;
+const available = httpOptions?.includes("reconnect_max_retries") && httpOptions?.includes("request_size")
   && spawnSync(ffprobe, ["-version"]).status === 0;
 if (process.env.REQUIRE_YOUTUBE_TRANSPORT_TESTS === "1" && !available) throw new Error("FFmpeg HTTP reconnect support and ffprobe are required");
 const nativeTest = (name, fn) => test(name, { skip: !available && "FFmpeg HTTP reconnect support or ffprobe unavailable", timeout: 30_000 }, fn);
-let dir, server, port, baseline;
+let dir, server, tlsServer, port, tlsPort, baseline;
 const media = new Map(), requests = [], sockets = new Set(), diagnostics = [];
 const saved = { yt: process.env.YT_DLP_PATH, ff: process.env.FFMPEG_PATH, info: console.info };
 let onResume;
@@ -21,41 +24,60 @@ let onResume;
 before(async () => {
   if (!available) return;
   dir = await mkdtemp(join(tmpdir(), "captions-range-"));
-  for (const [name, seconds, audio] of [["video.mp4", 12, false], ["audio.m4a", 12, true], ["short-video.mp4", 6, false], ["short-audio.m4a", 6, true]]) {
+  for (const [name, seconds, audio] of [["video.mp4", 12, false], ["audio.m4a", 12, true], ["short-video.mp4", 6, false], ["short-audio.m4a", 6, true], ["chunk-video.mp4", 12, false], ["low-video.mp4", 12, false]]) {
     const path = join(dir, name);
-    const result = spawnSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-      audio ? "sine=frequency=440:sample_rate=48000" : "testsrc2=size=160x90:rate=10",
+    const result = spawnSync(fixtureFfmpeg, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+      audio ? "sine=frequency=440:sample_rate=48000" : name === "chunk-video.mp4" ? "testsrc2=size=640x360:rate=30" : name === "low-video.mp4" ? "testsrc2=size=160x90:rate=1/4" : "testsrc2=size=160x90:rate=10",
       "-t", String(seconds), ...(audio ? ["-c:a", "aac", "-vn"] : ["-c:v", "libx264", "-threads", "1", "-g", "20", "-pix_fmt", "yuv420p", "-an"]),
-      "-movflags", "+faststart", path], { timeout: 10_000 });
+      ...(name === "chunk-video.mp4" ? ["-preset", "ultrafast", "-crf", "1"] : []),
+      ...(name === "low-video.mp4" ? ["-bf", "0"] : []), "-movflags", "+faststart", path], { timeout: 10_000 });
     assert.equal(result.status, 0, "synthetic fixture generation must succeed");
     media.set(name, await Bun.file(path).bytes());
   }
-  server = createServer((req, res) => {
+  const serveMedia = (req, res) => {
     const [id, filename] = new URL(req.url, "http://localhost").pathname.slice(1).split("/");
     let data = media.get(filename);
     if (id === "videocut000" && filename === "video.mp4") data = media.get("short-video.mp4");
     if (id === "audiocut000" && filename === "audio.m4a") data = media.get("short-audio.m4a");
-    const start = Number(/^bytes=(\d+)-/.exec(req.headers.range || "")?.[1] || 0);
+    if (id === "chunkfull00" && filename === "video.mp4") data = media.get("chunk-video.mp4");
+    if (id === "lowfps00000" && filename === "video.mp4") data = media.get("low-video.mp4");
+    const range = /^bytes=(\d+)-(\d*)/.exec(req.headers.range || "");
+    const start = Number(range?.[1] || 0);
+    const requestedEnd = range?.[2] ? Number(range[2]) : null;
     const count = requests.filter(x => x.id === id && x.filename === filename).length + 1;
-    requests.push({ id, filename, start, count });
+    requests.push({ id, filename, start, requestedEnd, count });
     if (id === "refuse40300" || id === "retry503000" && filename === "video.mp4" && count === 1) {
       res.writeHead(id === "refuse40300" ? 403 : 503, { "Retry-After": "10000" }); res.end("unavailable"); return;
     }
     assert.ok(data, "fixture must exist");
+    let end = Math.min(data.length, requestedEnd === null ? data.length : requestedEnd + 1);
     res.writeHead(206, { "Content-Type": "video/mp4", "Accept-Ranges": "bytes",
-      "Content-Length": data.length - start, "Content-Range": `bytes ${start}-${data.length - 1}/${data.length}` });
-    let end = data.length;
+      "Content-Length": end - start, "Content-Range": `bytes ${start}-${end - 1}/${data.length}` });
+    const declaredEnd = end;
     if (filename === "video.mp4" && ["videobreak0", "noresume000", "cancel00000"].includes(id) && count === 1 || filename === "audio.m4a" && id === "audiobreak0" && count === 1) end = Math.floor(data.length / 2);
     if (id === "noresume000" && filename === "video.mp4" && count > 1) end = start;
     if (id === "manybreak00" && filename === "video.mp4") end = Math.min(data.length, start + 4000);
     if (id === "cancel00000" && filename === "video.mp4" && count > 1) {
       res.flushHeaders(); onResume?.(); return;
     }
+    if (end < declaredEnd) {
+      const socket = res.socket;
+      res.on("finish", () => socket.end());
+    }
     res.end(data.subarray(start, end));
-  });
+  };
+  server = createServer(serveMedia);
   server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   port = server.address().port;
+  const cert = join(dir, "cert.pem"), key = join(dir, "key.pem");
+  assert.equal(spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", key, "-out", cert, "-subj", "/CN=127.0.0.1",
+    "-addext", "subjectAltName=IP:127.0.0.1", "-days", "1"], { timeout: 10_000 }).status, 0);
+  tlsServer = createTlsServer({ key: await Bun.file(key).text(), cert: await Bun.file(cert).text() }, serveMedia);
+  tlsServer.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  await new Promise(resolve => tlsServer.listen(0, "127.0.0.1", resolve));
+  tlsPort = tlsServer.address().port;
   const yt = join(dir, "yt-dlp"), adapter = join(dir, "ffmpeg");
   await writeFile(yt, `#!/usr/bin/env node
 const id=new URL(process.argv.at(-1)).searchParams.get('v');
@@ -65,7 +87,9 @@ console.log(JSON.stringify({title:'fixture',duration:12,requested_formats:[
 `);
   await writeFile(adapter, `#!/usr/bin/env node
 const {spawn}=require('node:child_process');
-const args=process.argv.slice(2).map(a=>a.startsWith('https://test.googlevideo.com/')?a.replace('https://test.googlevideo.com','http://127.0.0.1:${port}'):a);
+const options=process.argv.slice(2);
+const secure=options.some(a=>a.includes('/secure00000/'));
+const args=options.flatMap(a=>a==='-i'&&secure?['-ca_file',${JSON.stringify(cert)},'-i']:a.startsWith('https://test.googlevideo.com/')?[a.replace('https://test.googlevideo.com',secure?'https://127.0.0.1:${tlsPort}':'http://127.0.0.1:${port}')]:[a]);
 const child=spawn(${JSON.stringify(ffmpeg)},args,{stdio:'inherit'});
 child.on('exit',code=>process.exit(code??1));
 `);
@@ -80,6 +104,7 @@ after(async () => {
   if (saved.ff === undefined) delete process.env.FFMPEG_PATH; else process.env.FFMPEG_PATH = saved.ff;
   for (const socket of sockets) socket.destroy();
   if (server) await new Promise(resolve => server.close(resolve));
+  if (tlsServer) await new Promise(resolve => tlsServer.close(resolve));
   if (dir) await rm(dir, { recursive: true, force: true });
 });
 
@@ -112,6 +137,42 @@ nativeTest("real FFmpeg completes a full import with both tracks and safe diagno
   assert.equal(probe.status, 0);
   const streams = JSON.parse(probe.stdout).streams;
   for (const kind of ["video", "audio"]) assert.ok(Math.abs(Number(streams.find(x => x.codec_type === kind)?.duration) - 12) < 0.5);
+});
+
+nativeTest("the deployment FFmpeg binary reads both tracks over HTTPS", async () => {
+  const result = await download("secure00000");
+  assert.equal(result.error, undefined);
+  assert.equal(result.record.outcome, "complete");
+  assert.deepEqual(result.bytes, baseline);
+});
+
+nativeTest("large imports use bounded HTTP ranges without spending the reconnect budget", async () => {
+  assert.ok(media.get("chunk-video.mp4").length > 2 * 1048576);
+  const result = await download("chunkfull00");
+  assert.equal(result.error, undefined);
+  assert.equal(result.record.outcome, "complete");
+  assert.equal(result.record.reconnects, 0);
+  const ranges = requests.filter(x => x.id === "chunkfull00" && x.filename === "video.mp4");
+  assert.ok(ranges.length >= 3);
+  for (const range of ranges) {
+    assert.notEqual(range.requestedEnd, null, "range end must be bounded to avoid upstream throttling");
+    assert.ok(range.requestedEnd - range.start + 1 <= 1048576);
+  }
+  const path = join(dir, "chunked.mp4"); await writeFile(path, result.bytes);
+  const probe = spawnSync(ffprobe, ["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", path]);
+  assert.equal(probe.status, 0);
+  for (const stream of JSON.parse(probe.stdout).streams) assert.ok(Math.abs(Number(stream.duration) - 12) < 0.5);
+});
+
+nativeTest("a complete low-frame-rate track includes the final frame's duration", async () => {
+  const result = await download("lowfps00000");
+  assert.equal(result.error, undefined);
+  assert.equal(result.record.outcome, "complete");
+  assert.ok(Math.abs(result.record.trackEndSeconds[0] - 12) < 0.1);
+  const path = join(dir, "low-frame-rate.mp4"); await writeFile(path, result.bytes);
+  const probe = spawnSync(ffprobe, ["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", path]);
+  assert.equal(probe.status, 0);
+  for (const stream of JSON.parse(probe.stdout).streams) assert.ok(Math.abs(Number(stream.duration) - 12) < 0.5);
 });
 
 for (const [id, track] of [["videobreak0", "video.mp4"], ["audiobreak0", "audio.m4a"]]) {

@@ -62,6 +62,7 @@ const PLANS = {
   truncat0000:  {steps: [${us(CUT_SECONDS)}], ends: false},
   noend000000:  {steps: [300000000, ${us(SOURCE_SECONDS)}], ends: false},
   nodur000000:  {steps: [null], ends: true},
+  novideo0000:  {steps: [${us(SOURCE_SECONDS)}], ends: true, missingTrack: 0},
   reconnect00:  {steps: [${us(SOURCE_SECONDS)}], ends: true, reconnects: 5},
 };
 const plan = PLANS[id];
@@ -86,6 +87,8 @@ setTimeout(() => {
     process.stdout.write('bytes');
     if (reportsProgress) plan.steps.forEach((outTime, index) =>
       process.stderr.write(block(outTime, index === plan.steps.length - 1 && plan.ends)));
+    for (const track of [0, 1]) if (track !== plan.missingTrack)
+      process.stderr.write('[' + (track === 0 ? 'v' : 'a') + 'ost#0:' + track + '/copy @ 0xabc] muxer <- pts:0 pts_time:' + (plan.steps.at(-1) / 1e6) + ' dts:0 dts_time:0 duration:1 duration_time:0 size:1 latency(N/A)\\n');
   } catch {}
 }, 5);
 `);
@@ -171,6 +174,10 @@ test("repeated partial progress exhausts the whole-import reconnect budget and r
     assert.ok(!JSON.stringify(diagnostics).includes("https://"));
     assert.deepEqual(await readBody(await startImport("complete000")), { text: BODY });
   } finally { console.info = savedInfo; }
+});
+
+test("complete aggregate progress cannot hide a missing video track", async () => {
+  await assertStreamFails("novideo0000", "each output track must have an independently verified endpoint");
 });
 
 test("progress inside the 2.939s tolerance still completes the response", async () => {
