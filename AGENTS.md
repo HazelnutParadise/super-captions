@@ -4,6 +4,8 @@
 - `mp4-muxer` 5.2.2 is the latest release but is deprecated in favor of Mediabunny. Review a separate export-library migration before changing its API. See `lib/export-webcodecs.ts`.
 - Tailwind 4 handles vendor prefixes. Remove the unused direct `autoprefixer` dependency in a dependency-cleanup change. See `postcss.config.js` and `package.json`.
 
+- Resolve existing lint warnings (unused health catch binding, transcription binding and obsolete deprecation suppression) and the Tailwind config module-type build warning in a separate cleanup, preserving the CommonJS configuration. See `app/api/health/route.ts`, `lib/transcribe.ts`, `lib/export-webcodecs.ts` and `tailwind.config.ts`.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know
